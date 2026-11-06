@@ -26,7 +26,7 @@
   --owui: #5cc9bf; --owui-soft: #17312f; --manual: #b0b6bf; --manual-soft: #26282c;
   --mark: #4a3f12; --shadow: none; --onaccent: #10151f; --onerr: #1f0f0c; color-scheme: dark;
 }
-* { box-sizing: border-box; }
+* { box-sizing: border-box; scrollbar-color: var(--line-strong) transparent; }
 [hidden] { display: none !important; }
 html, body { height: 100%; }
 body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; display: flex; flex-direction: column; overflow: hidden; }
@@ -210,7 +210,7 @@ main { flex: 1; min-width: 0; overflow: auto; }
 .dl.del { color: var(--muted); }
 .dl.del .tx { text-decoration: line-through; }
 .wall-h { color: var(--text); font-size: 14px; }
-.wall { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); gap: 12px; }
+.wall { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(320px, 100%), 1fr)); gap: 12px; }
 .wall-card { display: flex; flex-direction: column; gap: 6px; min-height: 124px; padding: 12px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--panel); text-align: left; cursor: pointer; }
 .wall-card:hover { border-color: var(--line-strong); }
 .wall-card .top { display: flex; align-items: baseline; gap: 10px; }

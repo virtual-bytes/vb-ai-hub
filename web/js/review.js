@@ -22,8 +22,9 @@ function lineDiff(a, b) {
 }
 function diffHTML(rows) {
   const say = { add: "Added: ", del: "Removed: ", same: "" }, mark = { add: "+", del: "−", same: "" };
+  const plain = s => s.replace(/^(\s*)[-*+]\s+/, "$1• ").replace(/^_(.+)_$/, "$1").replace(/\*\*(.+?)\*\*/g, "$1");
   return rows.map(r => { const h = /^#{1,6}\s+/.test(r.s);
-    return `<div class="dl ${r.t}${h ? " h" : ""}"><span class="mk" aria-hidden="true">${mark[r.t]}</span><span class="tx"><span class="vh">${say[r.t]}</span>${esc(h ? r.s.replace(/^#+\s+/, "") : r.s)}</span></div>`; }).join("");
+    return `<div class="dl ${r.t}${h ? " h" : ""}"><span class="mk" aria-hidden="true">${mark[r.t]}</span><span class="tx"><span class="vh">${say[r.t]}</span>${esc(h ? r.s.replace(/^#+\s+/, "") : plain(r.s))}</span></div>`; }).join("");
 }
 async function blobText(sha) {
   if (!handoffText.has(sha)) handoffText.set(sha, await (await fetchBlob(`/api/blobs/${sha}`)).text());

@@ -5,6 +5,30 @@
 - **Board:** Ideas → Active → Needs you → Done, updated live.
 - **Library:** every item keeps its handoff docs and documents (versioned), a work log of summaries, the files it created or edited, and the full transcript. You can browse the library by project and search across all of it. Archiving an item takes it off the board and keeps it in the library. **Download all** exports an item as a zip.
 
+## What it looks like
+
+**The board.** Sessions and chats appear on their own as they happen, and the ticker across the top keeps a running count of tokens.
+
+![The board, with cards in Ideas, Active, Needs you and Done](docs/screenshots/board.png)
+
+**The library.** Every project on one page, sorted by what needs you. A project gets flagged for overdue tasks, or for recent work with no handoff.
+
+![The library home page, with projects grouped as Needs you and Moving](docs/screenshots/library.png)
+
+**A project.** The latest handoff comes first, with open tasks and recent work beside it. Everything else is one tab away.
+
+![A project's overview, showing its latest handoff and open tasks](docs/screenshots/project.png)
+
+**Handoff review.** See what changed since the last version and choose which sessions it's built from. Nothing is saved until you say so.
+
+![Reviewing a handoff draft, with changes highlighted and a list of sources](docs/screenshots/review.png)
+
+**Usage.** Burn rate, daily charts, budgets and estimated cost, ranked by project and model.
+
+![The usage page, with total tokens, a budget meter and cost charts](docs/screenshots/usage.png)
+
+These screenshots use made-up sample data.
+
 ## Install
 
 You need Docker. Get the repository, set an access token, and start the hub:
