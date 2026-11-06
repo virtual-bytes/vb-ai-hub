@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="hub-version" content="{{version}}">
+<title>VB AI Hub</title>
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" id="themeColor" content="#ffffff">
+<script src="/js/theme.js"></script>
+<link rel="stylesheet" href="/css/hub.css">
+</head>
+<body>
+<button class="ticker" id="ticker" type="button" aria-label="Token usage. Open the usage page">
+  <span class="tk-name">All tokens</span>
+  <span class="tk"><small>In</small><b id="tkIn">0</b></span>
+  <span class="tk"><small>Out</small><b id="tkOutAll">0</b></span>
+  <span class="tk-sep" aria-hidden="true"></span>
+  <span class="tk-name">Claude</span>
+  <span class="tk"><small><span class="m-only">Claude </span>Today</small><b id="tkToday">0</b></span>
+  <span class="tk opt"><small>7 days</small><b id="tkWeek">0</b></span>
+  <span class="tk opt"><small>30 days</small><b id="tkMonth">0</b></span>
+  <span class="tk-sep" aria-hidden="true"></span>
+  <span class="tk-name" data-local-label>Local models</span>
+  <span class="tk"><small><span class="m-only"><span data-local-label>Local models</span> </span>Today</small><b id="tkGpuToday">0</b></span>
+  <span class="tk opt"><small>All time</small><b id="tkGpuAll">0</b></span>
+  <span class="tk-more">Usage</span>
+</button>
+<div class="shell">
+<nav class="rail" id="rail" aria-label="Main">
+  <div class="rail-brand"><span class="live" id="live" title="Disconnected"></span>VB AI Hub</div>
+  <button class="rail-link" data-view="board"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="5" height="16" rx="1"></rect><rect x="10" y="4" width="5" height="10" rx="1"></rect><rect x="17" y="4" width="4" height="13" rx="1"></rect></svg>Board</button>
+  <button class="rail-link" data-view="tasks"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="m9 11 3 3 8-8"></path><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9"></path></svg>Tasks</button>
+  <button class="rail-link" data-view="library"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20V3H6.5A2.5 2.5 0 0 0 4 5.5z"></path><path d="M4 19.5A2.5 2.5 0 0 0 6.5 22H20v-5"></path></svg>Library</button>
+  <button class="rail-link" data-view="usage"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 20v-9M11 20V5M17 20v-6M2 20h20"></path></svg>Usage</button>
+  <div class="spacer"></div>
+  <button class="rail-link" data-view="settings"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10M18 6h2M4 12h2M10 12h10M4 18h7M15 18h5"></path><circle cx="16" cy="6" r="2"></circle><circle cx="8" cy="12" r="2"></circle><circle cx="13" cy="18" r="2"></circle></svg>Settings</button>
+  <div class="theme-seg" role="group" aria-label="Theme">
+    <button data-set-theme="light" aria-label="Light theme" title="Light theme" aria-pressed="false"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4"></circle><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"></path></svg></button>
+    <button data-set-theme="dark" aria-label="Dark theme" title="Dark theme" aria-pressed="false"><svg class="ic" viewBox="0 0 24 24" aria-hidden="true"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"></path></svg></button>
+  </div>
+</nav>
+<div class="app">
+<div class="topbar">
+  <h1 id="viewTitle">Board</h1>
+  <details class="menu pick" id="projPick"><summary class="btn"><span id="projLabel">All projects</span><span id="projFlag"></span><svg class="ic chev" viewBox="0 0 24 24" aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg></summary>
+    <div class="menu-list pick-list">
+      <input class="input" id="projFind" placeholder="Find a project" aria-label="Find a project" autocomplete="off">
+      <div class="pick-rows" id="projList"></div>
+      <button class="pick-new" id="newProject">New project</button>
+    </div></details>
+  <input class="input" id="search" type="search" placeholder="Search" autocomplete="off" aria-label="Search">
+  <div class="spacer"></div>
+  <button class="btn" id="askBtn">Ask the library</button>
+  <button class="btn" id="trashBtn">Trash</button>
+  <button class="btn" id="modeBtn">Show as list</button>
+  <button class="btn" id="selectBtn" aria-pressed="false">Select</button>
+  <button class="btn primary" id="addBtn">Add card</button>
+</div>
+<div class="srctabs" id="srcSeg" role="group" aria-label="Source"></div>
+<div class="work">
+<main>
+  <section class="view on" id="boardView"><div class="coltabs" id="colTabs" role="tablist" aria-label="Columns"></div><div class="board" id="board"></div></section>
+  <section class="view" id="tasksView"></section>
+  <section class="view" id="libraryView"><div class="lib-main" id="libMain"></div></section>
+  <section class="view" id="usageView"></section>
+  <section class="view" id="settingsView"><div class="set-page">
+<nav class="set-nav" aria-label="Settings" id="setNav"><button type="button" data-sec="general">General</button><button type="button" data-sec="connections">Connections</button><button type="button" data-sec="costs">Costs and budgets</button><button type="button" data-sec="handoffs">Handoffs and digests</button><button type="button" data-sec="library">Library</button><button type="button" data-sec="notifications">Notifications</button><button type="button" data-sec="backups">Backups</button><button type="button" data-sec="accounts">Accounts and access</button><button type="button" data-sec="claude">Connect tools</button><button type="button" data-sec="import">Import and capture</button></nav>
+<form id="settingsForm">
+<div class="set-section" data-sec-body="general"><h2>General</h2>
+<label class="switch"><input type="checkbox" data-s="auto_flow" data-bool> Move cards automatically (Active ⇄ Needs you, reopen on new activity)</label>
+    <label class="switch"><input type="checkbox" data-s="context_enabled" data-bool> Give new Claude Code sessions their project's context (handoff, open tasks, recent work)</label>
+<div class="row"><label class="field">Theme<select class="input" id="theme"><option value="">System</option><option value="light">Light</option><option value="dark">Dark</option></select></label></div>
+<div class="row"><label class="field" style="flex:2">Hub address (for links in notifications)<input class="input" data-s="public_url" placeholder="https://hub.example.com"></label>
+      <label class="field">Auto-archive Done after (days, 0 = off)<input class="input" data-s="auto_archive_days" type="number" min="0"></label></div>
+</div>
+<div class="set-section" data-sec-body="connections"><h2>Connections</h2>
+<div class="set-card"><h3>Open WebUI</h3>
+    <p>Syncs the chats of the account that owns the API key; folders become projects. Also used to generate handoffs and digests.</p>
+    <div class="row">
+      <label class="field" style="flex:2">URL<input class="input" data-s="owui_url" placeholder="https://openwebui.example.com"></label>
+      <label class="field">Every (seconds)<input class="input" data-s="owui_interval" type="number" min="30" step="30"></label>
+    </div>
+    <label class="field">API key<input class="input" data-s="owui_key" data-secret type="password" autocomplete="off"></label>
+    <div class="statusline"><span class="dot" id="owuiDot"></span><span id="owuiStatus" style="flex:1"></span><button class="btn small" type="button" id="owuiSync">Sync now</button></div>
+    <div class="notice" id="owuiHeld" hidden></div></div>
+<div class="set-card"><h3>LiteLLM</h3>
+    <p>Totals the work your gateway served from your own hardware. Reads counts from its spend logs; prompts and responses never reach the hub. Use a proxy admin or view-only key, because other keys only see their own requests.</p>
+    <div class="row">
+      <label class="field" style="flex:2">URL<input class="input" data-s="litellm_url" placeholder="http://litellm:4000"></label>
+      <label class="field">Every (minutes)<input class="input" data-s="litellm_interval" type="number" min="1" step="1"></label>
+    </div>
+    <label class="field">API key<input class="input" data-s="litellm_key" data-secret type="password" autocomplete="off"></label>
+    <label class="field">Count as local<textarea class="short" data-s="litellm_local" placeholder="One per line: part of a backend address or provider, or model:name. Leave empty to count everything."></textarea></label>
+    <label class="field">Leave out these key aliases<input class="input" data-s="litellm_exclude" placeholder="health-check, nightly-test"></label>
+    <div class="row">
+      <label class="field">Label<input class="input" data-s="local_label" placeholder="Local models"></label>
+      <label class="field">Time zone for daily totals<input class="input" data-s="usage_tz" placeholder="UTC"></label>
+    </div>
+    <label class="field">Names for key aliases<textarea class="short" data-s="client_names" placeholder="One per line, for example: n8n=Automations"></textarea></label>
+    <div class="statusline"><span class="dot" id="litellmDot"></span><span id="litellmStatus" style="flex:1"></span><button class="btn small" type="button" id="litellmSync">Sync now</button></div></div>
+</div>
+<div class="set-section" data-sec-body="costs"><h2>Costs and budgets</h2>
+<p>Costs are estimates at API prices. On a Claude subscription they show what the same usage would cost on the API, not what you pay.</p>
+<div class="row">
+  <label class="field">Monthly budget (dollars, empty = off)<input class="input" data-s="budget_monthly" type="number" min="0" step="any"></label>
+  <label class="field">Daily limit (dollars, empty = off)<input class="input" data-s="budget_daily" type="number" min="0" step="any"></label>
+</div>
+<p>The hub warns at 80% and 100% of the monthly budget, and once a day past the daily limit, through the webhook in Notifications.</p>
+<label class="field">Prices, in dollars per million tokens<textarea class="prices" data-s="model_prices" spellcheck="false"></textarea></label>
+<p>One model per line: <code>model = input, output, cache read, cache write</code>. A name also covers models that start with it, and the longest match wins. Without cache prices, reads cost 10% of input and writes 125%. Check them against Anthropic's pricing page when prices change.</p>
+</div>
+<div class="set-section" data-sec-body="handoffs"><h2>Handoffs and digests</h2>
+
+    <div class="row">
+      <label class="field">Model<input class="input" data-s="gen_model" placeholder="chat"></label>
+      <label class="field">Context budget (characters)<input class="input" data-s="gen_max_chars" type="number" min="8000" step="4000"></label>
+    </div>
+    <label class="field">Flag a project after this many days of work without a handoff<input class="input" data-s="stale_handoff_days" type="number" min="1"></label>
+    <label class="switch"><input type="checkbox" data-s="digest_enabled" data-bool> Weekly digest for every project with activity</label>
+    <div class="row">
+      <label class="field">Day<select class="input" data-s="digest_day"><option value="0">Monday</option><option value="1">Tuesday</option><option value="2">Wednesday</option><option value="3">Thursday</option><option value="4">Friday</option><option value="5">Saturday</option><option value="6">Sunday</option></select></label>
+      <label class="field">Hour (server time)<input class="input" data-s="digest_hour" type="number" min="0" max="23"></label>
+    </div>
+    <div class="statusline"><span class="dot" id="digestDot"></span><span id="digestStatus"></span></div>
+</div>
+<div class="set-section" data-sec-body="library"><h2>Library</h2>
+<h3>Ask the library</h3>
+    <div class="row">
+      <label class="field">Embedding model<input class="input" data-s="embed_model" placeholder="embed"></label>
+      
+    </div>
+    <div class="statusline"><span class="dot" id="indexDot"></span><span id="indexStatus" style="flex:1"></span><button class="btn small" type="button" id="indexNow">Index now</button></div>
+<h3>Deletions</h3>
+    <p>When a chat is deleted in Open WebUI, a project or chat is missing from a claude.ai export (with the remove option), or a Claude Code session is deleted on your machine. Sessions older than Claude Code's own cleanup window are always kept.</p>
+    <div class="row">
+      <label class="field">Action<select class="input" data-s="source_delete_action"><option value="trash">Move to trash</option><option value="archive">Keep in the library (archive)</option></select></label>
+      <label class="field">Empty trash after (days, 0 = immediately)<input class="input" data-s="trash_days" type="number" min="0"></label>
+    </div>
+</div>
+<div class="set-section" data-sec-body="notifications"><h2>Notifications</h2>
+
+    <p>When a Claude Code card has waited in Needs you longer than the delay, the hub posts to this URL. Home Assistant: a webhook trigger URL (JSON with title, message, url). ntfy: the topic URL.</p>
+    <div class="row">
+      <label class="field" style="flex:2">Webhook URL<input class="input" data-s="notify_url" data-secret type="password" autocomplete="off"></label>
+      <label class="field">Format<select class="input" data-s="notify_format"><option value="ha">Home Assistant (JSON)</option><option value="ntfy">ntfy</option></select></label>
+      <label class="field">After (minutes)<input class="input" data-s="notify_after" type="number" min="0"></label>
+    </div>
+    <div class="statusline"><span class="dot" id="notifyDot"></span><span id="notifyStatus" style="flex:1"></span><button class="btn small" type="button" id="notifyTest">Send test</button></div>
+<div class="row"><label class="field">Due-task reminder hour<input class="input" data-s="tasks_notify_hour" type="number" min="0" max="23"></label></div>
+</div>
+<div class="set-section" data-sec-body="backups"><h2>Backups</h2>
+
+    <div class="row">
+      <label class="field">Nightly at hour<input class="input" data-s="backup_hour" type="number" min="0" max="23"></label>
+      <label class="field">Keep snapshots (days)<input class="input" data-s="backup_keep_days" type="number" min="1"></label>
+    </div>
+    <div class="statusline"><span class="dot" id="backupDot"></span><span id="backupStatus" style="flex:1"></span><button class="btn small" type="button" id="backupNow">Back up now</button></div>
+</div>
+<div class="set-section" data-sec-body="accounts"><h2>Accounts and access</h2>
+<div class="statusline"><span id="accountLine" style="flex:1"></span>
+      <button class="btn small" type="button" id="manageUsers">Users</button>
+      <button class="btn small" type="button" id="changePw">Change password</button>
+      <button class="btn small" type="button" id="signOut">Sign out</button></div>
+<label class="field">Access token<input class="input" id="tokenInput" type="password" autocomplete="off"></label>
+</div>
+<div class="set-section" data-sec-body="claude"><h2>Connect tools</h2>
+<p>Connected tools can search your library, read handoffs and manage tasks from inside a session, through MCP. They can add and update tasks, and they can't delete anything.</p>
+<span class="seg" role="group" aria-label="Tool" id="toolSeg"><button type="button" data-tool="claude" aria-pressed="true">Claude Code</button><button type="button" data-tool="cursor" aria-pressed="false">Cursor</button><button type="button" data-tool="codex" aria-pressed="false">Codex</button><button type="button" data-tool="other" aria-pressed="false">Other tools</button></span>
+<div class="tool-pane" data-tool-body="claude">
+  <h3>Track this machine's sessions</h3>
+  <p>Run this on each machine that uses Claude Code, with your access token in place of <code>$HUB_TOKEN</code>. It adds the hooks that send sessions to the hub and brings in the ones already there.</p>
+  <div class="cmd"><code id="hookCmd"></code><button class="btn small" type="button" data-copy="hookCmd">Copy</button></div>
+  <h3>Let Claude use the library</h3>
+  <p>Run this once. Claude Code keeps the token in its own settings.</p>
+  <div class="cmd"><code id="mcpCmd"></code><button class="btn small" type="button" data-copy="mcpCmd">Copy</button></div>
+</div>
+<div class="tool-pane" data-tool-body="cursor" hidden>
+  <h3>Let Cursor use the library</h3>
+  <p>Add this to <code>~/.cursor/mcp.json</code>, and set <code>HUB_TOKEN</code> to your access token in Cursor's environment.</p>
+  <div class="cmd block"><code id="cursorCfg"></code><button class="btn small" type="button" data-copy="cursorCfg">Copy</button></div>
+  <p>Cursor sessions don't appear on the board yet.</p>
+</div>
+<div class="tool-pane" data-tool-body="codex" hidden>
+  <h3>Let Codex use the library</h3>
+  <p>Add this to <code>~/.codex/config.toml</code>, and set <code>HUB_TOKEN</code> to your access token in Codex's environment.</p>
+  <div class="cmd block"><code id="codexCfg"></code><button class="btn small" type="button" data-copy="codexCfg">Copy</button></div>
+  <p>Codex sessions don't appear on the board yet.</p>
+</div>
+<div class="tool-pane" data-tool-body="other" hidden>
+  <h3>Any MCP client</h3>
+  <p>Point it at this address and send your access token as a Bearer token. Connectors on claude.ai and ChatGPT need OAuth, which the hub doesn't offer yet.</p>
+  <div class="cmd"><code id="mcpUrl"></code><button class="btn small" type="button" data-copy="mcpUrl">Copy</button></div>
+  <h3>Your own scripts</h3>
+  <p>Post to the board and library from anything. Use <code>chatgpt</code>, <code>grok</code>, <code>cursor</code> or <code>codex</code> as the source to get a named tab, or any other name to appear under Other.</p>
+  <div class="cmd"><code id="ingestCmd"></code><button class="btn small" type="button" data-copy="ingestCmd">Copy</button></div>
+  <h3>GPT and Grok through Open WebUI</h3>
+  <p>Add your OpenAI or xAI key to Open WebUI and connect it under Connections. Those chats then sync here automatically.</p>
+</div>
+</div>
+<div class="set-section" data-sec-body="import"><h2>Import and capture</h2>
+<h3>Import from claude.ai</h3>
+<p>Bring in chats and projects from a claude.ai data export.</p>
+<button class="btn" type="button" id="importBtn" style="align-self:flex-start">Import export files</button>
+<h3>Send-to-hub bookmarklet</h3>
+    <p>Drag to your bookmarks bar, then click it on any claude.ai or Open WebUI chat to add it here.</p>
+    <a class="btn" id="bookmarklet" href="#" style="align-self:flex-start">+ VB AI Hub</a>
+</div>
+<div class="set-actions"><button class="btn primary" type="submit" id="settingsSave">Save changes</button></div>
+</form>
+</div></section>
+</main>
+<aside id="drawer" aria-hidden="true">
+  <div class="drawer-head">
+    <div class="ttl"><h2 id="dTitle"></h2><div class="sub"><span id="dTag"></span> <span id="dArchived" hidden>Archived.</span></div></div>
+    <button class="btn small primary genbtn" id="dHandoff">Generate handoff</button>
+    <details class="menu" id="dMore"><summary class="btn small">More</summary>
+      <div class="menu-list"><button id="dArchive">Archive</button><button class="danger" id="dDelete">Move to trash</button></div></details>
+    <button class="btn small" id="dClose">Close</button>
+  </div>
+  <div class="tabs" role="tablist" id="dTabs"></div>
+  <div class="drawer-body" id="dBody"></div>
+</aside>
+</div>
+</div>
+</div>
+<nav class="bottomnav" aria-label="Main">
+  <button data-view="board">Board</button>
+  <button data-view="tasks">Tasks</button>
+  <button data-view="library">Library</button>
+  <button id="moreBtn">More</button>
+</nav>
+
+<div class="bulkbar" id="bulkbar" hidden>
+  <span id="bulkCount" class="sub"></span>
+  <select class="input" id="bulkCol" aria-label="Move to"><option value="">Move to…</option></select>
+  <select class="input" id="bulkProj" aria-label="Project"><option value="">Project…</option></select>
+  <select class="input" id="bulkTask" aria-label="Task"><option value="">Task…</option></select>
+  <button class="btn small" id="bulkArchive">Archive</button>
+  <button class="btn small danger" id="bulkDelete">Delete</button>
+  <button class="btn small" id="bulkClear">Done</button>
+</div>
+
+<div class="scrim" id="scrim"></div>
+
+<dialog id="docDlg">
+  <div class="doc-head">
+    <span class="ttl" id="docTitle"></span><span class="sub" id="docPath"></span>
+    <div class="spacer"></div>
+    <select class="input" id="docVersion" aria-label="Version"></select>
+    <button class="btn small" id="docRaw">Raw</button>
+    <button class="btn small" id="docDownload">Download</button>
+    <button class="btn small" id="docClose">Close</button>
+  </div>
+  <div class="doc-body" id="docBody"></div>
+</dialog>
+
+<dialog id="addDlg">
+  <form method="dialog" id="addForm">
+    <h2>Add card</h2>
+    <p>Paste a claude.ai or Open WebUI chat link to track it, or add any AI project or idea.</p>
+    <label class="field">Title<input class="input" name="title" required></label>
+    <label class="field">Link<input class="input" name="url" placeholder="https://…"></label>
+    <div class="row">
+      <label class="field">Project<input class="input" name="project" list="projNames"></label>
+      <label class="field">Column<select class="input" name="column"></select></label>
+    </div>
+    <label class="field">Notes<textarea name="notes"></textarea></label>
+    <div class="actions"><button class="btn" type="button" data-close="addDlg">Cancel</button><button class="btn primary" value="ok">Add</button></div>
+  </form>
+</dialog>
+<datalist id="projNames"></datalist>
+
+<dialog id="importDlg">
+  <form method="dialog">
+    <h2>Import claude.ai export</h2>
+    <p>On claude.ai open Settings → Privacy → Export data. Unzip the download and pick <code>conversations.json</code> and/or <code>projects.json</code>. Chats are archived with their full conversation; project knowledge files and instructions are stored as documents. Re-importing updates cards and keeps your edits.</p>
+    <input type="file" id="importFile" accept=".json,application/json" multiple>
+    <label class="switch"><input type="checkbox" id="importPrune"> Also remove chats/projects that are no longer in this export (deleted on claude.ai)</label>
+    <div class="actions"><button class="btn" type="button" data-close="importDlg">Close</button><button class="btn primary" id="importGo" value="go">Import</button></div>
+  </form>
+</dialog>
+
+<dialog id="uiDlg" aria-labelledby="uiTitle">
+  <form method="dialog" id="uiForm">
+    <h2 id="uiTitle"></h2>
+    <div id="uiMsg" class="ui-msg"></div>
+    <div id="uiFields" class="ui-fields"></div>
+    <div class="actions"><button class="btn" type="button" id="uiCancel">Cancel</button><button class="btn primary" value="ok" id="uiOk">OK</button></div>
+  </form>
+</dialog>
+
+<input type="file" id="uploadInput" multiple hidden>
+<div class="updatebar" id="updateBar" role="status" hidden>
+  <span>A new version of the hub is ready.</span>
+  <button class="btn small primary" id="updateReload">Reload</button>
+  <button class="btn small" id="updateLater">Later</button>
+</div>
+<div class="toast" id="toast"></div>
+
+<script src="/js/core.js"></script>
+<script src="/js/dialogs.js"></script>
+<script src="/js/auth.js"></script>
+<script src="/js/markdown.js"></script>
+<script src="/js/board.js"></script>
+<script src="/js/jobs.js"></script>
+<script src="/js/drawer.js"></script>
+<script src="/js/documents.js"></script>
+<script src="/js/library.js"></script>
+<script src="/js/project.js"></script>
+<script src="/js/review.js"></script>
+<script src="/js/tasks.js"></script>
+<script src="/js/ask.js"></script>
+<script src="/js/trash.js"></script>
+<script src="/js/controls.js"></script>
+<script src="/js/settings.js"></script>
+<script src="/js/ticker.js"></script>
+<script src="/js/usage.js"></script>
+<script src="/js/live.js"></script>
+<script src="/js/boot.js"></script>
+</body>
+</html>

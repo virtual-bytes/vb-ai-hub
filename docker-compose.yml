@@ -1,0 +1,19 @@
+# VB AI Hub. Put HUB_TOKEN in .env next to this file, then run: docker compose up -d
+services:
+  vb-ai-hub:
+    image: vb-ai-hub:latest
+    build: .
+    container_name: vb-ai-hub
+    restart: unless-stopped
+    ports:
+      - "8787:8787"
+    environment:
+      HUB_TOKEN: ${HUB_TOKEN:?set HUB_TOKEN in .env}
+      HUB_BACKUP_DIR: /backup
+    volumes:
+      - vb-ai-hub-data:/data
+      - vb-ai-hub-backup:/backup
+
+volumes:
+  vb-ai-hub-data:
+  vb-ai-hub-backup:
