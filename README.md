@@ -31,16 +31,18 @@ These screenshots use made-up sample data.
 
 ## Install
 
-You need Docker. Get the repository, set an access token, and start the hub:
+You need Docker. Get the compose file, set an access token, and start the hub:
 
 ```bash
-git clone https://github.com/virtual-bytes/vb-ai-hub.git
-cd vb-ai-hub
+mkdir vb-ai-hub && cd vb-ai-hub
+curl -fsSLO https://raw.githubusercontent.com/virtual-bytes/vb-ai-hub/main/docker-compose.yml
 echo "HUB_TOKEN=$(openssl rand -hex 32)" > .env
 docker compose up -d
 ```
 
 Open `http://your-server:8787` and create the admin account. It asks for the token in `.env`, which also connects tools and hooks to the hub.
+
+That runs the published image, `ghcr.io/virtual-bytes/vb-ai-hub`. To build it yourself, clone the repository, change the `image:` line in `docker-compose.yml` to `build: .`, and run `docker compose up -d --build`. To update later, run `docker compose pull && docker compose up -d`.
 
 Without Docker, you only need Python. It's tested on 3.13 and 3.14:
 

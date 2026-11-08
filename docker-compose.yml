@@ -1,8 +1,9 @@
 # VB AI Hub. Put HUB_TOKEN in .env next to this file, then run: docker compose up -d
+# To run your own build instead of the published image, clone the repository and
+# replace the image line with: build: .
 services:
   vb-ai-hub:
-    image: vb-ai-hub:latest
-    build: .
+    image: ghcr.io/virtual-bytes/vb-ai-hub:latest
     container_name: vb-ai-hub
     restart: unless-stopped
     ports:
