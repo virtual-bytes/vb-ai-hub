@@ -125,7 +125,7 @@ To install it, go to Workspace → Tools → +, paste the file, save, and set th
   - **Home Assistant:** the body is JSON `{title, message, url}`.
   - **ntfy:** the body is plain text, with the `Title` and `Click` headers set.
 - Set **Hub address** so the link opens the card (`…/#card=<id>`).
-- `GET /healthz` is a plain liveness check. `GET /healthz?deep=1` returns 503 if the last backup is older than 36 hours or failed, or if Open WebUI sync is failing. Point Uptime Kuma at it.
+- `GET /healthz` is a plain liveness check. `GET /healthz?deep=1` with the access token returns 503 if the last backup is older than 36 hours or failed, or if Open WebUI sync is failing. Point Uptime Kuma at it with an `Authorization: Bearer` header. Without the token it only answers the plain check.
 
 Home Assistant automation for the webhook (replace the notify target):
 
@@ -209,7 +209,7 @@ docker compose start
 
 | Source | How | What gets archived |
 |---|---|---|
-| Claude Code (CLI and desktop) | Hooks run `hook.py` on SessionStart, UserPromptSubmit, Stop, and SessionEnd. Archiving runs in a detached background process, so sessions never wait. | Docs the session wrote or edited (`.md`, `.txt`, `.rst`, `.adoc`), handoff docs in the working folder that the session names and that changed while it ran, every file path written or edited, Claude's final reply each turn, and the compressed transcript (re-sent after 1 MB of growth or 20 minutes, and always on SessionEnd). |
+| Claude Code (CLI and desktop) | Hooks run `hook.py` on SessionStart, UserPromptSubmit, Stop, and SessionEnd. Archiving runs in a detached background process, so sessions never wait. | Docs the session wrote or edited (`.md`, `.txt`, `.rst`, `.adoc`), wherever they are on the machine, not only inside the working folder, handoff docs in the working folder that the session names and that changed while it ran, every file path written or edited, Claude's final reply each turn, and the compressed transcript (re-sent after 1 MB of growth or 20 minutes, and always on SessionEnd). |
 | Open WebUI | The server polls the API with the key set in **Settings**. Folders become projects. | Each assistant reply goes to the work log, and the full chat JSON is stored as the transcript. |
 | claude.ai | **Import** your data export (`conversations.json`, `projects.json`), the bookmarklet, or **Add card**. claude.ai has no listing API. | Full conversation, project knowledge files, and project instructions. |
 | Anything else | `POST /api/ingest` and `PUT …/attachments` (below). | Whatever you send. |
@@ -218,7 +218,7 @@ Claude Code's own memory files (`~/.claude/projects/*/memory`) are excluded.
 
 ## API
 
-All `/api/*` calls need `Authorization: Bearer <HUB_TOKEN>`. For SSE only, `?token=` also works.
+All `/api/*` calls need `Authorization: Bearer <HUB_TOKEN>`. The live stream (`/api/stream`) also takes `?token=`, because browsers can't set headers on it; no other address does.
 
 Generic ingest, for any tool:
 
@@ -263,7 +263,7 @@ The rest of the API:
 
 Three ways in, and any one is enough:
 
-- **Accounts:** on a fresh hub the first visitor creates the admin account, which requires the access token (`HUB_TOKEN`) so nobody else can claim the install. Admins add people under Settings → Accounts and access, as admin or member. Members use the board and library; settings, users, backups and maintenance are admin-only. Passwords are PBKDF2-hashed, sessions last 30 days in an HttpOnly, SameSite cookie, and an account locks for 5 minutes after 5 wrong passwords.
+- **Accounts:** on a fresh hub the first visitor creates the admin account, which requires the access token (`HUB_TOKEN`) so nobody else can claim the install. Admins add people under Settings → Accounts and access, as admin or member. Members can read everything, add and edit cards, move them, trash and restore them, upload files, add and edit tasks and projects, and ask the library questions. Only admins can delete forever, rename or merge projects, delete tasks or files, change rules, run imports, syncs, generation and backups, and change settings or users. Passwords are PBKDF2-hashed, sessions last 30 days in an HttpOnly, SameSite=Strict cookie, an account locks for 5 minutes after 5 wrong passwords, and an address locks after 30 wrong passwords across any accounts.
 - **Access token:** `Authorization: Bearer <HUB_TOKEN>`, for hooks and tools. It acts as admin.
 - **Single sign-on:** a trusted proxy sends `X-Authentik-Username` with the shared `HUB_PROXY_SECRET`. It acts as admin.
 

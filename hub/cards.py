@@ -4,7 +4,7 @@ import json
 
 from . import db
 from .config import COLUMNS, EDITABLE
-from .util import now
+from .util import as_int, now, parse_ts, plain_status, safe_url
 from .db import db_lock, int_setting, setting
 from .redaction import redact
 from .live import broadcast
@@ -21,9 +21,7 @@ def upsert(card_id: str, source: str, fields: dict, initial_col: str, event: str
         t = now()
         if "project" in fields:
             fields["source_project"] = fields.pop("project")
-        for k in ("title", "last_prompt", "summary"):
-            if isinstance(fields.get(k), str):
-                fields[k] = redact(fields[k])
+        clean_fields(fields)
         if existing is None:
             col = initial_col if initial_col in COLUMNS else "active"
             data = {
@@ -69,6 +67,24 @@ def upsert(card_id: str, source: str, fields: dict, initial_col: str, event: str
     return push_card(card_id)
 
 
+def clean_fields(fields):
+    """Every value from a source is scrubbed and typed before it's stored."""
+    for k in ("title", "last_prompt", "summary", "notes", "cwd", "model", "host", "source_project", "session_id"):
+        if fields.get(k) is not None:
+            fields[k] = redact(str(fields[k]))
+    if fields.get("url") is not None:
+        fields["url"] = redact(safe_url(fields["url"])) or None
+    if fields.get("status") is not None:
+        fields["status"] = plain_status(fields["status"])
+    for k in ("created_at", "last_activity"):
+        if k in fields:
+            fields[k] = parse_ts(fields[k])
+    if "msg_count" in fields:
+        n = as_int(fields["msg_count"])
+        fields["msg_count"] = n if n is not None and n >= 0 else None
+    return fields
+
+
 def patch_card(cid, body):
     with db_lock:
         card = get_card(cid)
@@ -78,7 +94,12 @@ def patch_card(cid, body):
         for k in EDITABLE & body.keys():
             if k == "column" and body[k] not in COLUMNS:
                 continue
-            updates["col" if k == "column" else k] = body[k]
+            v = body[k]
+            if k in ("title", "notes", "project"):
+                v = redact(str(v or ""))[:20000 if k == "notes" else 300]
+            elif k == "url":
+                v = redact(safe_url(v))
+            updates["col" if k == "column" else k] = v
             if k != "column":
                 locked.add(k)
         if "project" in updates:

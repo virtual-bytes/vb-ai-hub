@@ -1,8 +1,11 @@
 """The SQLite database: schema, the shared connection and stored settings."""
 
+import json
+import os
 import secrets
 import sqlite3
 import threading
+from pathlib import Path
 
 from .config import BACKUP_DIR, BLOB_DIR, DB_PATH, DEFAULT_SETTINGS, SECRET_SETTINGS
 from .util import now
@@ -36,8 +39,9 @@ class SharedConnection(sqlite3.Connection):
 
 
 def connect():
-    BLOB_DIR.mkdir(parents=True, exist_ok=True)
+    BLOB_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
     c = sqlite3.connect(DB_PATH, check_same_thread=False, factory=SharedConnection)
+    private_files()
     c.row_factory = sqlite3.Row
     c.execute("PRAGMA journal_mode=WAL")
     c.executescript(
@@ -153,11 +157,45 @@ def connect():
                             COALESCE(k.source, substr(u.card_id, 1, instr(u.card_id, ':') - 1)),
                             u.input, u.output, u.cache_write, u.cache_read, u.messages
                      FROM usage u LEFT JOIN cards k ON k.id=u.card_id""")
+    clean_stored(c)
     for r in c.execute("SELECT DISTINCT project FROM cards WHERE project != ''").fetchall():
         c.execute("INSERT OR IGNORE INTO projects(id, name, created_at, updated_at) VALUES (?,?,?,?)",
                   (secrets.token_hex(5), r["project"], now(), now()))
     c.commit()
     return c
+
+
+def private_files():
+    """The database and files hold full transcripts: only the hub's own user may read them."""
+    for p in [Path(DB_PATH + x) for x in ("", "-wal", "-shm")] + [BLOB_DIR]:
+        try:
+            if p.exists():
+                os.chmod(p, 0o700 if p.is_dir() else 0o600)
+        except OSError:
+            pass
+
+
+def clean_stored(c):
+    """Values stored before the hub checked them: file types that aren't bare media types, and links that aren't web addresses."""
+    from .util import clean_mime, safe_url
+    for r in c.execute("SELECT id, name, mime FROM attachments").fetchall():
+        m = clean_mime(r["mime"], r["name"])
+        if m != r["mime"]:
+            c.execute("UPDATE attachments SET mime=? WHERE id=?", (m, r["id"]))
+    for r in c.execute("SELECT id, url FROM cards WHERE url IS NOT NULL AND url != ''").fetchall():
+        if safe_url(r["url"]) != r["url"]:
+            c.execute("UPDATE cards SET url=? WHERE id=?", (safe_url(r["url"]) or None, r["id"]))
+    for r in c.execute("SELECT rowid, url FROM links WHERE url != ''").fetchall():
+        if safe_url(r["url"]) != r["url"]:
+            c.execute("UPDATE links SET url=? WHERE rowid=?", (safe_url(r["url"]), r["rowid"]))
+    for r in c.execute("SELECT id, links FROM projects WHERE links != '[]'").fetchall():
+        try:
+            links = json.loads(r["links"])
+            ok = [l for l in links if isinstance(l, dict) and safe_url(l.get("url"))]
+        except (ValueError, TypeError):
+            ok, links = [], None
+        if ok != links:
+            c.execute("UPDATE projects SET links=? WHERE id=?", (json.dumps(ok), r["id"]))
 
 
 conn = None  # set in main() / restore

@@ -2,6 +2,7 @@
 
 import gzip
 import json
+import re
 import shutil
 import sqlite3
 import sys
@@ -61,6 +62,9 @@ def restore(snapshot=None):
     if not BACKUP_DIR:
         sys.exit("HUB_BACKUP_DIR is not set")
     snaps = sorted((BACKUP_DIR / "db").glob("hub-*.db.gz"))
+    if snapshot and not re.fullmatch(r"hub-\d{8}-\d{6}\.db\.gz", snapshot):
+        names = ", ".join(p.name for p in snaps[-5:]) or "none"
+        sys.exit(f"{snapshot!r} isn't a snapshot name. Give just the file name from {BACKUP_DIR / 'db'}, for example: {names}")
     src = (BACKUP_DIR / "db" / snapshot) if snapshot else (snaps[-1] if snaps else None)
     if not src or not src.exists():
         sys.exit(f"no snapshot found in {BACKUP_DIR / 'db'}")
@@ -121,11 +125,17 @@ def redact_existing() -> dict:
             if d != r["detail"]:
                 db.conn.execute("UPDATE events SET detail=? WHERE id=?", (d, r["id"]))
                 counts["events"] = counts.get("events", 0) + 1
-        for r in db.conn.execute("SELECT id, notes FROM cards WHERE notes != ''").fetchall():
-            n = redact(r["notes"])
-            if n != r["notes"]:
-                db.conn.execute("UPDATE cards SET notes=? WHERE id=?", (n, r["id"]))
-                counts["cards"] += 1
+        for table, key, cols in (("cards", "id", ("notes", "url", "cwd")), ("tasks", "id", ("title", "notes")),
+                                 ("projects", "id", ("description", "goals", "links")), ("links", "rowid", ("title", "url")),
+                                 ("attachments", "id", ("name", "path")), ("files_log", "rowid", ("path",)), ("rules", "id", ("pattern",))):
+            for r in db.conn.execute(f"SELECT {key} AS k, {', '.join(cols)} FROM {table}").fetchall():
+                new = {c: redact(r[c]) if isinstance(r[c], str) else r[c] for c in cols}
+                if any(new[c] != r[c] for c in cols):
+                    try:
+                        db.conn.execute(f"UPDATE {table} SET {', '.join(f'{c}=?' for c in cols)} WHERE {key}=?", [*new.values(), r["k"]])
+                        counts[table] = counts.get(table, 0) + 1
+                    except sqlite3.IntegrityError:
+                        pass  # a clean copy of the same row is already there
         db.conn.execute("DELETE FROM chunks")  # rebuilt from the clean text by the indexer
         db.conn.commit()
     old = []

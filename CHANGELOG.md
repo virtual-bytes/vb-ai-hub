@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.0.1
+
+This release is all security fixes. Before more people installed the hub, I had its code reviewed for security, and this release fixes everything the review found. If you run 1.0.0, please update.
+
+### Fixed
+
+- **Download headers.** A file's type, as given when it was uploaded, was copied into the headers of every later download. Someone with the access token or a member account could use that to add their own headers. File types are now checked when they're stored and again when they're sent, and types stored before this release are cleaned up when the hub starts.
+- **The token in the address.** `?token=` worked on every address, not just the live stream, and a wrong token fell back to a signed-in cookie. With the reverse proxy example, that let someone with a local account get around single sign-on. The token in the address now only works for the live stream, a wrong token is always refused, and the proxy example no longer lets `?token=` skip Authentik.
+- **What members can do.** Members could delete forever, merge projects, change rules and start generations. Members can still read everything, work with cards, tasks and projects, upload files and ask the library. The rest is now for admins, and any new route is admin only until it's marked as safe for members.
+- **Links.** Links that weren't web addresses, such as `javascript:`, could be saved on cards, projects and commit links and then clicked. Only `http` and `https` links are kept now, and the page checks again before it shows one.
+- **Card status.** A status sent to the ingest API could be shown as HTML in the Details tab. It's plain text now.
+- **Open WebUI chat ids.** A chat id containing `../` could make the hub fetch other Open WebUI pages using your key. Chat ids are now checked.
+- **Secret scrubbing.** Notes, card links, folders, task and project text, file names and paths are now scrubbed too. It also catches Slack and Discord webhooks, Stripe, SendGrid, Twilio, npm, PyPI, Hugging Face, DigitalOcean, Google OAuth, Telegram, Azure keys and Basic auth. To clean what's already stored, send `POST /api/admin/redact` with the access token once.
+- **Names with accents.** Downloading or exporting a file or card with letters outside Latin-1, like Polish ones, failed. Downloads now send the real name the standard way.
+- **Login lockout.** Failing to sign in with thousands of different names reset every lock. Locks now stay until they expire, and an address is locked after 30 wrong passwords across any accounts.
+- **Regex rules.** A title rule like `/^(a+)+$/` could freeze the whole hub. Rules that repeat a group, use back references or repeat more than three times are refused.
+- **Smaller fixes.** A negative `Content-Length` is refused, JSON requests are limited to 16 MB, and exports are written to a temporary file instead of memory. `--restore` only takes a snapshot name. The page has a Content Security Policy and can't be framed. Writes from other sites are refused, and the session cookie is `SameSite=Strict`. The detailed health check needs the token. The database and files are readable only by the hub's own user. Errors no longer show internal details. Hook fields are checked for the right type. The installer checks the hook it downloads against a checksum and warns when the hub isn't on https. Text quoted from your library is clearly marked as material, not instructions, everywhere it reaches a model. Task changes made through MCP show in the task's activity.
+
+The test suite has a test for each of these.
+
 ## 1.0.0
 
 This is the first public release of VB AI Hub.

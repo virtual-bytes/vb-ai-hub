@@ -19,13 +19,26 @@ TOKEN = env("TOKEN")
 PROXY_SECRET = env("PROXY_SECRET")
 BLOB_DIR = Path(DB_PATH).resolve().parent / "blobs"
 BACKUP_DIR = Path(env("BACKUP_DIR", "")) if env("BACKUP_DIR") else None
-MAX_BODY = 200 * 1024 * 1024
+MAX_BODY = 200 * 1024 * 1024  # file uploads and claude.ai exports
+MAX_JSON = 16 * 1024 * 1024  # everything else
+MAX_STREAMS, MAX_STREAMS_PER_CLIENT = 200, 20
 FTS_DOC_LIMIT = 512 * 1024
 COLUMNS = ["ideas", "active", "needs_me", "done"]
 EDITABLE = {"title", "project", "notes", "url", "column"}
 SECRET_SETTINGS = {"owui_key", "notify_url", "litellm_key"}
 SESSION_COOKIE = "hub_session"
 ADMIN_ONLY = {"/api/settings", "/api/backup", "/api/index", "/api/integrations/owui/apply-removals"}
+# What a signed-in member may change. Reading is open to members (apart from ADMIN_ONLY and
+# the user list); every other write is for admins, so a new route is admin only until it's listed here.
+# Members can't purge cards or rename projects either; those checks live in the routes.
+MEMBER_WRITES = [
+    ("POST", r"/api/cards"), ("POST", r"/api/cards/bulk"),
+    ("PATCH", r"/api/cards/[^/]+"), ("DELETE", r"/api/cards/[^/]+"), ("POST", r"/api/cards/[^/]+/restore"),
+    ("PUT", r"/api/cards/[^/]+/attachments"), ("PUT", r"/api/owners/[^/]+/attachments"),
+    ("POST", r"/api/tasks"), ("PATCH", r"/api/tasks/[^/]+"),
+    ("POST", r"/api/projects"), ("PATCH", r"/api/projects/[^/]+"),
+    ("POST", r"/api/ask"), ("POST", r"/api/auth/password"), ("POST", r"/mcp"),
+]
 RULE_FIELDS = ("title", "path", "source_project")
 PRIORITIES = ("low", "normal", "high", "urgent")
 DEFAULT_PRICES = """claude-fable-5-1 = 10, 50, 0.25, 12.5

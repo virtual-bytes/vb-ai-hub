@@ -16,6 +16,9 @@ const state = { cards: new Map(), columns: Object.keys(COLS), settings: {}, proj
 const $ = (s, el = document) => el.querySelector(s);
 const $$ = (s, el = document) => [...el.querySelectorAll(s)];
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+// Only plain web addresses become links; javascript:, data: and the like never do, even if one was stored long ago.
+const safeUrl = u => /^https?:\/\/[^\s]+$/i.test(String(u ?? "").trim()) ? String(u).trim() : "";
+const safeHref = u => esc(safeUrl(u) || "#");
 function store(k, v) { try { v === undefined ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} }
 function load(k) { try { return localStorage.getItem(k) || ""; } catch { return ""; } }
 function applyTheme(t) { t ? document.documentElement.dataset.theme = t : delete document.documentElement.dataset.theme; }

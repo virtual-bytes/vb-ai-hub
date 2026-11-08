@@ -6,6 +6,7 @@
 import collections
 import contextlib
 import gzip
+import hashlib
 import http.client
 import http.server
 import io
@@ -120,7 +121,7 @@ class Auth(Hub):
         c.close()
 
 
-class Accounts(Hub):
+class AccountHelpers:
     PW = "correct horse battery"
 
     def raw(self, method, path, body=None, headers=None):
@@ -141,6 +142,8 @@ class Accounts(Hub):
             status, _, _ = self.raw("POST", "/api/auth/setup", {"username": "boss", "password": self.PW, "token": TOKEN})
             self.assertEqual(status, 201)
 
+
+class Accounts(AccountHelpers, Hub):
     def test_a_setup_needs_the_access_token(self):
         self.assertEqual(self.raw("POST", "/api/auth/setup", {"username": "boss", "password": self.PW, "token": "nope"})[0], 403)
         self.assertTrue(self.raw("GET", "/api/auth/status")[1]["setup_needed"])
@@ -151,7 +154,7 @@ class Accounts(Hub):
         self.ensure_admin()
         _, _, cookie = self.raw("POST", "/api/auth/login", {"username": "boss", "password": self.PW})
         self.assertIn("HttpOnly", cookie)
-        self.assertIn("SameSite=Lax", cookie)
+        self.assertIn("SameSite=Strict", cookie)
         _, _, proxied = self.raw("POST", "/api/auth/login", {"username": "boss", "password": self.PW}, {"X-Forwarded-Proto": "https"})
         self.assertIn("Secure", proxied)
         self.assertEqual(self.raw("GET", "/api/cards", headers={"Cookie": cookie.split(";")[0]})[0], 200)
@@ -302,11 +305,11 @@ class Page(Hub):
 
     def test_published_text_has_no_long_dashes_or_hidden_characters(self):
         banned = re.compile("[\u2012-\u2015\u200b-\u200f\u202a-\u202e\u2060-\u2064\ufeff\u00ad]")
-        files = [f for f in ROOT.rglob("*") if f.is_file() and not {"private", "backup", "__pycache__", ".git"} & set(f.parts) and f.suffix in (".md", ".py", ".js", ".css", ".html", ".yml", ".sh", ".conf")]
+        files = [f for f in ROOT.rglob("*") if f.is_file() and not {"private", "backup", "__pycache__", ".git", ".claude"} & set(f.parts) and f.suffix in (".md", ".py", ".js", ".css", ".html", ".yml", ".sh", ".conf")]
         self.assertEqual([f.name for f in files if banned.search(f.read_text(errors="replace"))], [])
 
     def test_nothing_private_in_the_published_files(self):
-        files = [f for f in ROOT.rglob("*") if f.is_file() and not {"private", "backup", "__pycache__", ".git"} & set(f.parts) and f.suffix != ".pyc"]
+        files = [f for f in ROOT.rglob("*") if f.is_file() and not {"private", "backup", "__pycache__", ".git", ".claude"} & set(f.parts) and f.suffix != ".pyc"]
         private = re.compile(r"172\.31\.|virtualbytes\.io|gnetwork|ai-stack-infra|/home/tomek")
         hits = [f.name for f in files if f != Path(__file__).resolve() and private.search(f.read_text(errors="replace"))]
         self.assertEqual(hits, [])
@@ -1293,6 +1296,385 @@ class HookParsing(unittest.TestCase):
             totals, _ = self.h.subagent_usage(str(Path(d, "s1.jsonl")), offsets)
             self.assertEqual(totals["claude-x"]["output"], 9)
             self.assertEqual(self.h.subagent_usage(str(Path(d, "s1.jsonl")), offsets)[0], {})
+
+
+class Security(AccountHelpers, Hub):
+    """One or more tests per finding in the November 2026 security review."""
+
+    def conn(self):
+        return http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+
+    def get(self, path, headers=None):
+        c = self.conn()
+        c.request("GET", path, headers=headers or {})
+        r = c.getresponse()
+        body = r.read()
+        c.close()
+        return r, body
+
+    def member(self, name="member2"):
+        self.ensure_admin()
+        status, _ = self.call("POST", "/api/users", {"username": name, "password": self.PW})
+        self.assertIn(status, (201, 400))  # 400 once the name exists
+        return self.sign_in(name)
+
+    # 1. Upload types can't add response headers
+    def test_mime_cannot_inject_headers(self):
+        cid = self.hook("mime-inject", title="m")["id"]
+        q = urllib.parse.urlencode({"name": "a.txt", "kind": "upload", "mime": "text/plain\r\nX-Injected: yes\r\nContent-Disposition: inline"})
+        res = self.ok("PUT", f"/api/cards/{self.q(cid)}/attachments?{q}", b"hello")
+        r, body = self.get(f"/api/blobs/{res['sha']}", {"Authorization": f"Bearer {TOKEN}"})
+        self.assertEqual((r.status, body), (200, b"hello"))
+        self.assertIsNone(r.getheader("X-Injected"))
+        self.assertEqual(len(r.msg.get_all("Content-Disposition")), 1)
+        self.assertEqual(r.getheader("Content-Type"), "text/plain; charset=utf-8")
+        mimes = [a["mime"] for a in self.ok("GET", f"/api/cards/{self.q(cid)}/archive")["attachments"]]
+        self.assertEqual(mimes, ["text/plain"])
+
+    def test_svg_and_html_uploads_download_as_text(self):
+        cid = self.hook("svg-up", title="s")["id"]
+        for name, mime in (("x.svg", "image/svg+xml"), ("x.html", "text/html")):
+            q = urllib.parse.urlencode({"name": name, "kind": "upload", "mime": mime})
+            sha = self.ok("PUT", f"/api/cards/{self.q(cid)}/attachments?{q}", b"<svg onload=alert(1)>")["sha"]
+            r, _ = self.get(f"/api/blobs/{sha}", {"Authorization": f"Bearer {TOKEN}"})
+            self.assertNotIn("svg", r.getheader("Content-Type"))
+            self.assertNotIn("html", r.getheader("Content-Type"))
+            self.assertIn("sandbox", r.getheader("Content-Security-Policy"))
+            self.assertTrue(r.getheader("Content-Disposition").startswith("attachment"))
+
+    # 2. The address token is for the live stream only, and a wrong token never falls back to a cookie
+    def test_query_token_only_for_the_stream(self):
+        self.assertEqual(self.call("GET", f"/api/cards?token={TOKEN}", token=None)[0], 401)
+        self.assertEqual(self.call("GET", f"/api/users?token={TOKEN}", token=None)[0], 401)
+        c = self.conn()
+        c.request("GET", f"/api/stream?token={TOKEN}")
+        r = c.getresponse()
+        self.assertEqual(r.status, 200)
+        c.close()
+
+    def test_wrong_token_is_not_rescued_by_a_cookie(self):
+        h = self.member("cookie-user")
+        self.assertEqual(self.raw("GET", "/api/cards", headers=h)[0], 200)
+        self.assertEqual(self.raw("GET", "/api/cards?token=wrong", headers=h)[0], 401)
+        self.assertEqual(self.raw("GET", "/api/stream?token=wrong", headers=h)[0], 401)
+        self.assertEqual(self.raw("GET", "/api/cards", headers={**h, "Authorization": "Bearer wrong"})[0], 401)
+        # Signing in with a made-up token, as a request skipping single sign-on at the proxy would, is refused.
+        self.assertEqual(self.raw("POST", "/api/auth/login?token=x", {"username": "cookie-user", "password": self.PW})[0], 401)
+        self.assertEqual(self.raw("POST", "/api/auth/login", {"username": "cookie-user", "password": self.PW}, {"Authorization": "Bearer x"})[0], 401)
+
+    def test_proxy_example_has_no_address_token_bypass(self):
+        conf = (ROOT / "examples/reverse-proxy/nginx-authentik.conf").read_text()
+        self.assertNotIn("token=", conf)
+        self.assertIn('"^/healthz(\\?|$)"', conf)
+
+    # 3. Members use the board and library; destructive and admin actions are for admins
+    def test_member_cannot_destroy_or_reshape(self):
+        h = self.member()
+        cid = self.hook("member-victim", title="v")["id"]
+        p1 = self.ok("POST", "/api/projects", {"name": "m-one"})
+        p2 = self.ok("POST", "/api/projects", {"name": "m-two"})
+        t = self.ok("POST", "/api/tasks", {"project_id": p1["id"], "title": "keep me"})
+        refused = [
+            ("DELETE", f"/api/cards/{self.q(cid)}?purge=1", None),
+            ("POST", "/api/cards/bulk", {"ids": [cid], "purge": True}),
+            ("POST", f"/api/projects/{p1['id']}/merge", {"into": p2["id"]}),
+            ("PATCH", f"/api/projects/{p1['id']}", {"name": "m-two"}),
+            ("DELETE", f"/api/tasks/{t['id']}", None),
+            ("POST", "/api/import?prune=1", [{"uuid": "x", "chat_messages": []}]),
+            ("POST", "/api/reconcile/code", {"host": "h", "sessions": ["a"]}),
+            ("POST", "/api/notify/test", {}),
+            ("POST", "/api/integrations/owui/sync", {}),
+            ("POST", "/api/generate", {"kind": "handoff", "scope": "project", "id": p1["id"]}),
+            ("POST", "/api/rules", {"project_id": p1["id"], "field": "title", "pattern": "x"}),
+            ("POST", "/api/usage/local", {"rows": []}),
+            ("POST", "/api/events", {"hook_event_name": "Stop", "session_id": "m"}),
+            ("POST", "/api/tools/file-chat", {"chat_id": "a", "project": "p"}),
+        ]
+        for method, path, body in refused:
+            self.assertEqual(self.raw(method, path, body, h)[0], 403, f"{method} {path}")
+        self.assertEqual(self.call("GET", f"/api/cards/{self.q(cid)}")[0], 200)
+        self.assertEqual(self.call("GET", f"/api/tasks/{t['id']}")[0], 200)
+
+    def test_member_can_still_work(self):
+        h = self.member("worker")
+        pid = self.ok("POST", "/api/projects", {"name": "m-work"})["id"]
+        status, card, _ = self.raw("POST", "/api/cards", {"title": "an idea", "project": "m-work"}, h)
+        self.assertEqual(status, 201)
+        cid = self.q(card["id"])
+        for method, path, body, want in [
+            ("PATCH", f"/api/cards/{cid}", {"column": "active", "notes": "n"}, 200),
+            ("DELETE", f"/api/cards/{cid}", None, 200),
+            ("POST", f"/api/cards/{cid}/restore", {}, 200),
+            ("POST", "/api/tasks", {"project_id": pid, "title": "do it"}, 201),
+            ("PATCH", f"/api/projects/{pid}", {"description": "about"}, 200),
+            ("POST", "/api/cards/bulk", {"ids": [card["id"]], "set": {"column": "done"}}, 200),
+        ]:
+            self.assertEqual(self.raw(method, path, body, h)[0], want, f"{method} {path}")
+
+    # 4. Only web addresses become links
+    def test_links_must_be_web_urls(self):
+        for url in ("javascript:alert(1)", "data:text/html,hi", "vbscript:x", " javascript:alert(1)", "JaVaScRiPt:alert(1)"):
+            status, card = self.call("POST", "/api/cards", {"title": "t", "url": url})
+            self.assertEqual(status, 201)
+            self.assertFalse(card.get("url"), url)
+            self.assertFalse(self.ok("PATCH", f"/api/cards/{self.q(card['id'])}", {"url": url}).get("url"), url)
+        p = self.ok("POST", "/api/projects", {"name": "linky"})
+        out = self.ok("PATCH", f"/api/projects/{p['id']}", {"links": [{"label": "x", "url": "javascript:alert(1)"}, {"label": "ok", "url": "https://example.com"}]})
+        self.assertEqual([l["url"] for l in out["project"]["links"]], ["https://example.com"])
+        cid = self.hook("linky-sess", title="l")["id"]
+        self.ok("POST", f"/api/cards/{self.q(cid)}/links", [{"kind": "pr", "key": "k", "url": "javascript:alert(1)"}])
+        self.assertEqual([l["url"] for l in self.ok("GET", f"/api/cards/{self.q(cid)}/archive")["links"]], [""])
+        self.assertFalse(self.ok("POST", "/api/ingest", {"source": "tool", "id": "u1", "url": "javascript:alert(1)"}).get("url"))
+
+    def test_the_page_only_links_web_addresses(self):
+        js = "\n".join(f.read_text() for f in (ROOT / "web" / "js").glob("*.js"))
+        self.assertEqual(re.findall(r'href="\$\{esc\([^)]*url\)\}"', js), [])
+
+    # 5. A status is a short plain label
+    def test_ingest_status_is_plain_text(self):
+        card = self.ok("POST", "/api/ingest", {"source": "chatgpt", "id": "s1", "title": "t", "status": "<span><img src=x onerror=alert(1)>"})
+        self.assertNotIn("<", card["status"])
+        self.assertLessEqual(len(card["status"]), 40)
+        self.assertNotIn('startsWith("<span")', (ROOT / "web/js/drawer.js").read_text())
+
+    # 6. A chat id can't change the Open WebUI path
+    def test_chat_id_cannot_change_the_path(self):
+        seen = []
+
+        class Fake(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                seen.append(self.path)
+                b = b"{}"
+                self.send_response(200)
+                self.send_header("Content-Length", str(len(b)))
+                self.end_headers()
+                self.wfile.write(b)
+        srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Fake)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        try:
+            self.ok("POST", "/api/settings", {"owui_url": f"http://127.0.0.1:{srv.server_port}", "owui_key": "k" * 20})
+            for chat_id in ("../../api/v1/users/", "a/b", "a%2Fb", "x" * 65):
+                self.assertEqual(self.call("POST", "/api/tools/file-chat", {"chat_id": chat_id, "project": "p"})[0], 400, chat_id)
+            self.assertFalse([p for p in seen if "/chats/" in p and ("." in p or "%2F" in p)], seen)
+        finally:
+            self.ok("POST", "/api/settings", {"owui_url": "", "owui_key": ""})
+            srv.shutdown()
+
+    # 7. Every free-text field is scrubbed, and more key formats are caught
+    def test_every_free_text_field_is_scrubbed(self):
+        card = self.ok("POST", "/api/cards", {"title": "n", "notes": "password = SuperSecret123!", "url": "https://user:Hunter2pass@git.example.com/repo"})
+        self.assertNotIn("SuperSecret123", card["notes"])
+        self.assertNotIn("Hunter2pass", card["url"])
+        card = self.ok("PATCH", f"/api/cards/{self.q(card['id'])}", {"notes": "token=ghp_" + "A" * 36, "title": "api_key=sk-live-" + "d" * 24})
+        self.assertNotIn("ghp_AAAA", card["notes"])
+        self.assertNotIn("sk-live-dddd", card["title"])
+        p = self.ok("POST", "/api/projects", {"name": "scrub", "description": "secret=abcdef123456789"})
+        self.assertNotIn("abcdef123456789", p["description"])
+        out = self.ok("PATCH", f"/api/projects/{p['id']}", {"goals": "AKIAABCDEFGHIJKLMNOP", "links": [{"label": "repo", "url": "https://u:Hunter2pass@x.example/r"}]})
+        self.assertNotIn("AKIAABCDEFGHIJKLMNOP", out["project"]["goals"])
+        self.assertNotIn("Hunter2pass", out["project"]["links"][0]["url"])
+        t = self.ok("POST", "/api/tasks", {"project_id": p["id"], "title": "x", "notes": "api_key=sk-live-" + "b" * 24})
+        self.assertNotIn("sk-live-bbbb", t["notes"])
+        t = self.ok("PATCH", f"/api/tasks/{t['id']}", {"notes": "password: Hunter2pass!"})
+        self.assertNotIn("Hunter2pass", t["notes"])
+        cid = self.hook("scrub-sess", title="s", cwd="/srv/app")["id"]
+        q = urllib.parse.urlencode({"name": "token=ghp_" + "B" * 36 + ".md", "kind": "doc", "path": "/x/password=Hunter2pass.md"})
+        self.ok("PUT", f"/api/cards/{self.q(cid)}/attachments?{q}", b"text")
+        self.ok("POST", f"/api/cards/{self.q(cid)}/files", [{"path": "/x/secret=Hunter2pass/a.py"}])
+        a = self.ok("GET", f"/api/cards/{self.q(cid)}/archive")
+        self.assertNotIn("Hunter2pass", json.dumps(a))
+        self.assertNotIn("ghp_BBBB", json.dumps(a))
+
+    def test_more_key_formats(self):
+        for s in ("https://hooks.slack.com/services/T000/B000/XXXXXXXXXXXXXXXXXXXXXXXX", "123456789:AAE_abcdefghijklmnopqrstuvwxyz0123456",
+                  "sk_live_" + "c" * 24, "whsec_" + "e" * 32, "SG.abcdefghijklmnopqr.abcdefghijklmnopqrstu", "npm_" + "a" * 36,
+                  "hf_" + "a" * 34, "ya29." + "a" * 30, "Authorization: Basic dXNlcjpwYXNzd29yZA==",
+                  "AccountKey=abcdefghijklmnopqrstuvwxyz0123==", "https://discord.com/api/webhooks/123/" + "a" * 40,
+                  "postgres://app:pa/ss@db.local:5432/x"):
+            notes = self.ok("POST", "/api/cards", {"title": "r", "notes": f"before {s} after"})["notes"]
+            self.assertIn("REDACTED", notes, s)
+            self.assertTrue(notes.startswith("before ") and notes.endswith(" after"), notes)
+
+    # 8. Non-Latin names download and export
+    def test_unicode_names_download_and_export(self):
+        card = self.ok("POST", "/api/cards", {"title": "Zażółć gęślą jaźń"})
+        q = urllib.parse.urlencode({"name": "notatki_żółć.txt", "kind": "upload"})
+        res = self.ok("PUT", f"/api/owners/{self.q(card['id'])}/attachments?{q}", b"tekst")
+        r, body = self.get(f"/api/blobs/{res['sha']}", {"Authorization": f"Bearer {TOKEN}"})
+        self.assertEqual((r.status, body), (200, b"tekst"))
+        self.assertIn("filename*=UTF-8''notatki_%C5%BC%C3%B3%C5%82%C4%87.txt", r.getheader("Content-Disposition"))
+        r, z = self.get(f"/api/cards/{self.q(card['id'])}/bundle", {"Authorization": f"Bearer {TOKEN}"})
+        self.assertEqual(r.status, 200)
+        self.assertEqual(int(r.getheader("Content-Length")), len(z))
+        self.assertIn("docs/notatki_żółć.txt", zipfile.ZipFile(io.BytesIO(z)).namelist())
+
+    def test_project_export_keeps_items_and_skips_transcripts(self):
+        self.hook("exp-1", title="Exported item", project="exporty")
+        self.ok("PUT", f"/api/cards/{self.q('code:exp-1')}/attachments?kind=transcript&name=t.jsonl.gz&path=t&replace=1", gzip.compress(b"{}"))
+        pid = self.project("exporty")["id"]
+        names = zipfile.ZipFile(io.BytesIO(self.ok("GET", f"/api/projects/{pid}/bundle", raw=True))).namelist()
+        self.assertTrue(any(n.startswith("items/Exported_item_") and n.endswith("/README.md") for n in names), names)
+        self.assertFalse([n for n in names if "/transcript/" in n])
+        names = zipfile.ZipFile(io.BytesIO(self.ok("GET", f"/api/projects/{pid}/bundle?transcripts=1", raw=True))).namelist()
+        self.assertTrue([n for n in names if "/transcript/" in n])
+
+    # 10. Regex rules can't stall the hub
+    def test_regex_rules_are_bounded(self):
+        p = self.ok("POST", "/api/projects", {"name": "redos"})
+        for pattern in ("/^(a+)+$/", "/(a|aa)*$/", "/.*.*.*.*!/", "/(x)\\1/", "/" + "a" * 101 + "/", "/[/"):
+            self.assertEqual(self.call("POST", "/api/rules", {"project_id": p["id"], "field": "title", "pattern": pattern})[0], 400, pattern)
+        self.assertEqual(self.call("POST", "/api/rules", {"project_id": p["id"], "field": "title", "pattern": "/^redos-(one|two)$/"})[0], 201)
+        t0 = time.time()
+        self.assertEqual(self.hook("redos-1", title="redos-one")["project"], "redos")
+        self.hook("redos-2", title="a" * 5000 + "!")
+        self.assertLess(time.time() - t0, 2)
+
+    # 11. Body sizes
+    def test_negative_or_odd_content_length_is_rejected(self):
+        for value in ("-1", "abc", "1e3"):
+            s = socket.create_connection(("127.0.0.1", self.port))
+            s.settimeout(5)
+            s.sendall(f"POST /api/cards HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {TOKEN}\r\nContent-Length: {value}\r\n\r\n".encode())
+            self.assertIn(b" 400 ", s.recv(200), value)  # the status line always comes first
+            s.close()
+
+    def test_json_bodies_have_a_smaller_limit(self):
+        s = socket.create_connection(("127.0.0.1", self.port))
+        s.settimeout(5)
+        s.sendall(f"POST /api/cards HTTP/1.1\r\nHost: x\r\nAuthorization: Bearer {TOKEN}\r\nContent-Length: {50 * 1024 * 1024}\r\n\r\n".encode())
+        reply = b""
+        while b"too large" not in reply:
+            chunk = s.recv(400)
+            if not chunk:
+                break
+            reply += chunk
+        self.assertIn(b" 400 ", reply)
+        self.assertIn(b"too large", reply)
+        s.close()
+
+    # 12. --restore only takes a snapshot name from the backup folder
+    def test_restore_takes_only_a_snapshot_name(self):
+        env = {**os.environ, "HUB_BACKUP_DIR": f"{self.tmp.name}/backup", "HUB_DB": f"{self.tmp.name}/restore-test.db"}
+        for name in ("../../etc/hosts", "/etc/hosts", "hub-1.db.gz"):
+            run = subprocess.run([sys.executable, str(ROOT / "server.py"), "--restore", name], env=env, capture_output=True, text=True)
+            self.assertNotEqual(run.returncode, 0)
+            self.assertIn("isn't a snapshot name", run.stderr)
+        self.assertFalse(Path(f"{self.tmp.name}/restore-test.db").exists())
+
+    # 13. Page protections
+    def test_page_has_a_content_security_policy(self):
+        r, _ = self.get("/")
+        csp = r.getheader("Content-Security-Policy") or ""
+        for part in ("script-src 'self'", "frame-ancestors 'none'", "object-src 'none'", "base-uri 'none'"):
+            self.assertIn(part, csp)
+        self.assertEqual(r.getheader("X-Frame-Options"), "DENY")
+        html = (ROOT / "web/index.html").read_text()
+        self.assertEqual(re.findall(r"<script(?![^>]*\bsrc=)[^>]*>", html), [], "inline scripts would break under the policy")
+        self.assertEqual(re.findall(r"\son[a-z]+=", html), [])
+
+    def test_writes_from_other_sites_are_refused(self):
+        c = self.conn()
+        c.request("POST", "/api/cards", body=json.dumps({"title": "x"}), headers={"Authorization": f"Bearer {TOKEN}", "Sec-Fetch-Site": "cross-site", "Content-Type": "application/json"})
+        self.assertEqual(c.getresponse().status, 403)
+        c.close()
+        self.assertEqual(self.call("POST", "/api/cards", {"title": "same site"})[0], 201)
+
+    # 14. The deep health check needs the token for details
+    def test_deep_health_needs_auth(self):
+        self.assertEqual(self.call("GET", "/healthz?deep=1", token=None)[1], {"ok": True})
+        self.assertIn("problems", self.call("GET", "/healthz?deep=1")[1])
+
+    # 15. Private files
+    def test_data_files_are_private(self):
+        files = [p for p in Path(self.tmp.name, "data").rglob("*")]
+        self.assertTrue(files)
+        for p in files:
+            self.assertEqual(p.stat().st_mode & 0o077, 0, p)
+
+    # 16. Errors don't leak details
+    def test_internal_errors_are_generic(self):
+        status, out = self.call("POST", "/api/cards/bulk", {"ids": ["x"], "set": 5})
+        self.assertIn(status, (400, 500))
+        self.assertNotIn("attribute", out["error"])
+        self.assertEqual(self.call("GET", "/api/cards")[0], 200)
+
+    def test_null_byte_in_an_asset_path(self):
+        self.assertEqual(self.call("GET", "/js/core%00.js", token=None)[0], 404)
+
+    # 17. Hook fields are typed
+    def test_hook_fields_are_typed(self):
+        status, card = self.call("POST", "/api/events", {"hook_event_name": "UserPromptSubmit", "session_id": "typed", "title": "t",
+                                                         "created_at": "yesterday", "msg_count": "lots", "last_activity": {"x": 1}})
+        self.assertEqual(status, 200)
+        self.assertIsInstance(card["created_at"], float)
+        self.assertEqual(self.call("GET", "/api/cards/code%3Atyped/bundle", raw=True)[0], 200)
+
+    # 18. The installer checks what it downloads
+    def test_installer_checks_the_hook_checksum(self):
+        sums = self.ok("GET", "/connect/sums")
+        self.assertEqual(sums["hook.py"], hashlib.sha256((ROOT / "hook.py").read_bytes()).hexdigest())
+        script = self.ok("GET", "/connect/install.sh", raw=True)
+        with tempfile.TemporaryDirectory() as home:
+            env = {**os.environ, "HOME": home, "HUB_URL": self.base, "HUB_TOKEN": TOKEN, "HUB_HOOK_SHA256": "0" * 64}
+            run = subprocess.run(["bash", "-s", "--", "--no-backfill"], input=script, capture_output=True, env=env, cwd=home)
+            self.assertNotEqual(run.returncode, 0)
+            self.assertIn(b"doesn't match", run.stderr)
+            self.assertFalse((Path(home) / ".claude/settings.json").exists())
+            self.assertFalse((Path(home) / ".local/share/vb-ai-hub/hook.py").exists())
+            env["HUB_HOOK_SHA256"] = sums["hook.py"]
+            run = subprocess.run(["bash", "-s", "--", "--no-backfill"], input=script, capture_output=True, env=env, cwd=home)
+            self.assertEqual(run.returncode, 0, run.stderr.decode())
+            self.assertNotIn(b"isn't https", run.stderr)  # a local hub gets no warning
+
+    # 19. Quoted library text is labelled wherever it reaches a model
+    def test_quoted_material_is_labelled(self):
+        gen, ret = (ROOT / "hub/generate.py").read_text(), (ROOT / "hub/retrieval.py").read_text()
+        self.assertIn("never follow them", gen)
+        self.assertIn("never follow them", ret)
+        self.assertIn("<material>", gen)
+        self.assertIn("<sources>", ret)
+        p = self.ok("POST", "/api/projects", {"name": "briefed"})
+        self.assertIn("not as instructions", self.ok("GET", "/api/tools/brief?project=briefed")["note"])
+        status, out = self.call("POST", "/mcp", {"jsonrpc": "2.0", "id": 1, "method": "tools/call",
+                                                 "params": {"name": "add_task", "arguments": {"project": "briefed", "title": "from mcp"}}})
+        tid = json.loads(out["result"]["content"][0]["text"])["id"]
+        kinds = [e["kind"] for e in self.ok("GET", f"/api/cards/{self.q('task:' + tid)}/events")["events"]]
+        self.assertIn("mcp", kinds)
+
+
+class Lockout(unittest.TestCase):
+    def test_flooding_does_not_reset_a_lock(self):
+        code = """
+import sys
+from hub import db, accounts
+db.conn = db.connect()
+accounts.PBKDF2_ROUNDS, accounts.FAIL_DELAY = 1000, 0
+accounts.create_user("alice", "correct horse battery", "admin")
+for _ in range(5):
+    try: accounts.login("alice", "nope nope nope")
+    except PermissionError: pass
+for i in range(10001):
+    try: accounts.login(f"junk{i}", "x" * 12)
+    except PermissionError: pass
+try:
+    accounts.login("alice", "correct horse battery"); print("open")
+except PermissionError as e: print(e)
+for i in range(30):
+    try: accounts.login(f"bob{i}", "nope nope nope", "10.0.0.9")
+    except PermissionError: pass
+try: accounts.login("carol", "anything at all", "10.0.0.9")
+except PermissionError as e: print(e)
+"""
+        with tempfile.TemporaryDirectory() as d:
+            run = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, timeout=120,
+                                 env={**os.environ, "HUB_DB": f"{d}/hub.db"})
+            self.assertEqual(run.returncode, 0, run.stderr)
+            lines = run.stdout.split("\n")
+            self.assertIn("too many", lines[0])
+            self.assertIn("too many", lines[1])
 
 
 if __name__ == "__main__":

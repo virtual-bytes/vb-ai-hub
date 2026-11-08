@@ -15,7 +15,7 @@ from .usage import add_usage
 
 
 def handle_hook(ev: dict) -> dict:
-    sid = ev.get("session_id") or ""
+    sid = str(ev.get("session_id") or "")[:100]
     if not sid:
         raise ValueError("session_id required")
     name = ev.get("hook_event_name") or ev.get("event") or "update"
@@ -30,7 +30,7 @@ def handle_hook(ev: dict) -> dict:
     if ev.get("created_at"):
         fields["created_at"] = ev["created_at"]
     if ev.get("prompt"):
-        fields["last_prompt"] = ev["prompt"][:400]
+        fields["last_prompt"] = str(ev["prompt"])[:400]
     col = existing["column"] if existing else None
     if name in ("SessionStart", "UserPromptSubmit"):
         fields["status"] = "running"
@@ -44,16 +44,17 @@ def handle_hook(ev: dict) -> dict:
         fields["status"] = "ended"
     elif name == "backfill" and not existing:
         fields["status"] = ""
-    initial = ev.get("column") or ("needs_me" if name == "Stop" else "active")
+    initial = ev.get("column") if ev.get("column") in COLUMNS else None
+    initial = initial or ("needs_me" if name == "Stop" else "active")
     if not fields.get("title") and not existing:
-        fields["title"] = (ev.get("prompt") or "")[:80] or f"Session {sid[:8]}"
-    return upsert(card_id, "code", fields, initial, name, ev.get("prompt") or ev.get("source") or ev.get("reason") or "")
+        fields["title"] = str(ev.get("prompt") or "")[:80] or f"Session {sid[:8]}"
+    return upsert(card_id, "code", fields, initial, str(name)[:40], str(ev.get("prompt") or ev.get("source") or ev.get("reason") or ""))
 
 
 def handle_ingest(ev: dict) -> dict:
     """Generic ingest: {source, id, title, project, url, status, column, event, detail, summary, notes, worklog, archived}."""
     source = re.sub(r"[^a-z0-9_-]", "", str(ev.get("source", "")).lower())[:32]
-    ext = str(ev.get("id") or "").strip()
+    ext = str(ev.get("id") or "").strip()[:200]
     if not source or not ext:
         raise ValueError("source and id required")
     card_id = f"{source}:{ext}"
@@ -64,7 +65,7 @@ def handle_ingest(ev: dict) -> dict:
         fields["column"] = ev["column"]
     if not existing and not fields["title"]:
         fields["title"] = f"{source} {ext[:12]}"
-    upsert(card_id, source, fields, ev.get("column") or "active", ev.get("event") or "update", ev.get("detail") or "")
+    upsert(card_id, source, fields, ev.get("column") or "active", str(ev.get("event") or "update")[:40], str(ev.get("detail") or "")[:2000])
     if ev.get("worklog"):
         add_worklog(card_id, [{"text": ev["worklog"], "at": ev.get("at"), "ref": ev.get("ref")}])
     if ev.get("usage"):

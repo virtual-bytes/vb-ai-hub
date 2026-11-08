@@ -45,7 +45,7 @@ function renderDetails(full) {
       <label class="field">Column<select class="input" data-f="column">${state.columns.map(k => `<option value="${k}" ${k === c.column ? "selected" : ""}>${COLS[k][0]}</option>`).join("")}</select></label>
     </div>
     ${c.source !== "code" ? `<label class="field">Link<input class="input" data-f="url" value="${esc(c.url)}"></label>` : ""}
-    ${c.url ? `<a class="btn" style="align-self:flex-start" href="${esc(c.url)}" target="_blank" rel="noopener">${openLabel}</a>` : ""}
+    ${safeUrl(c.url) ? `<a class="btn" style="align-self:flex-start" href="${safeHref(c.url)}" target="_blank" rel="noopener">${openLabel}</a>` : ""}
     ${resume ? `<div><div class="sec-h"><h3>Resume in a terminal</h3></div><div class="cmd" style="margin-top:10px"><code>${esc(resume)}</code><button class="btn small" id="copyResume">Copy</button></div></div>` : ""}
     ${c.summary ? `<div><div class="sec-h"><h3>Latest summary</h3><button class="btn link" data-goto="library">Full work log</button></div><div class="log" style="margin-top:10px"><div class="b">${esc(c.summary)}</div></div></div>` : ""}
     <label class="field">Notes<textarea data-f="notes" placeholder="Goals, decisions, next steps, links…">${esc(c.notes)}</textarea></label>
@@ -76,9 +76,9 @@ function infoHTML(c) {
     ["Last activity", fullDate(c.last_activity)], ["Created", fullDate(c.created_at)], ["Archived", fullDate(c.archived_at)],
     ["Messages", c.msg_count || ""], ["Model", c.model], ["Tokens", usageLine(c.usage)],
     ["Library", [a.docs && `${a.docs} documents`, a.links && `${a.links} commits/MRs`, a.files && `${a.files} files touched`, a.logs && `${a.logs} log entries`, a.transcripts && "transcript"].filter(Boolean).join(", ")],
-    ["Folder", c.cwd ? `<span class="mono">${esc(c.cwd)}</span>` : ""], ["Session", c.session_id ? `<span class="mono">${esc(c.session_id)}</span>` : ""],
+    ["Folder", c.cwd ? { html: `<span class="mono">${esc(c.cwd)}</span>` } : ""], ["Session", c.session_id ? { html: `<span class="mono">${esc(c.session_id)}</span>` } : ""],
   ];
-  return rows.filter(r => r[1]).map(([k, v]) => `<dt>${k}</dt><dd>${typeof v === "string" && v.startsWith("<span") ? v : esc(v)}</dd>`).join("");
+  return rows.filter(r => r[1]).map(([k, v]) => `<dt>${k}</dt><dd>${v.html ?? esc(v)}</dd>`).join("");
 }
 async function save(id, patch) {
   try { state.cards.set(id, await post(`/api/cards/${enc(id)}`, patch, "PATCH")); render(); if (state.openId === id) renderDetails(true); toast("Saved"); }
@@ -116,7 +116,7 @@ function docRows(owner, groups, emptyMsg) {
 }
 function linksHTML(links) {
   if (!links.length) return `<div class="empty">No commits or merge requests linked yet.</div>`;
-  return `<div class="files">${links.map(l => `<div><span class="tag plain">${l.kind === "commit" ? "Commit" : l.kind === "mr" ? "MR" : "PR"}</span><span class="p">${l.url ? `<a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.title || l.key)}</a>` : esc(l.title || l.key)}${l.repo ? ` <span class="arch">${esc(l.repo)}${l.kind === "commit" ? " · " + esc(l.key.slice(0, 8)) : ""}</span>` : ""}</span><span class="a">${ago(l.at)}</span></div>`).join("")}</div>`;
+  return `<div class="files">${links.map(l => `<div><span class="tag plain">${l.kind === "commit" ? "Commit" : l.kind === "mr" ? "MR" : "PR"}</span><span class="p">${safeUrl(l.url) ? `<a href="${safeHref(l.url)}" target="_blank" rel="noopener">${esc(l.title || l.key)}</a>` : esc(l.title || l.key)}${l.repo ? ` <span class="arch">${esc(l.repo)}${l.kind === "commit" ? " · " + esc(l.key.slice(0, 8)) : ""}</span>` : ""}</span><span class="a">${ago(l.at)}</span></div>`).join("")}</div>`;
 }
 function usageTable(rows) {
   if (!rows.length) return "";

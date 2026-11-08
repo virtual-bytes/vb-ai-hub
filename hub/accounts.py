@@ -3,6 +3,7 @@
 import hashlib
 import re
 import secrets
+import time
 
 from . import db
 from .util import now
@@ -13,7 +14,11 @@ SESSION_DAYS = 30
 PBKDF2_ROUNDS = 600_000
 MIN_PASSWORD = 10
 LOCK_AFTER, LOCK_SECONDS = 5, 300
-login_failures: dict[str, list] = {}  # username -> [count, locked_until]
+ADDR_LOCK_AFTER = 30  # failures from one address, across any usernames, within LOCK_SECONDS
+MAX_TRACKED = 10000
+FAIL_DELAY = 0.2  # seconds added to every wrong password
+login_failures: dict[str, list] = {}  # username -> [count, locked_until, last_failure]
+addr_failures: dict[str, list] = {}  # client address -> the same
 
 
 def hash_password(password: str) -> str:
@@ -37,6 +42,8 @@ DUMMY_HASH = None  # checked for unknown usernames, so timing doesn't reveal whi
 def valid_password(password):
     if len(str(password or "")) < MIN_PASSWORD:
         raise ValueError(f"password must be at least {MIN_PASSWORD} characters")
+    if len(str(password)) > 1024:
+        raise ValueError("password must be at most 1024 characters")
     return str(password)
 
 
@@ -84,20 +91,40 @@ def session_row(token):
                            (hashlib.sha256(token.encode()).hexdigest(), now())).fetchone()
 
 
-def login(username, password):
+def locked(table, key) -> bool:
+    state = table.get(key)
+    return bool(state) and state[1] > now()
+
+
+def note_failure(table, key, limit):
+    """Count a failed login. Old entries make room for new ones; a lock is never dropped to make room."""
+    t = now()
+    state = table.get(key)
+    if state and t - state[2] > LOCK_SECONDS and state[1] <= t:
+        state = None  # the last failure was a while ago: start counting again
+    count = (state[0] if state else 0) + 1
+    table[key] = [count, t + LOCK_SECONDS if count >= limit else 0, t]
+    if len(table) > MAX_TRACKED:
+        for k in [k for k, v in table.items() if v[1] <= t and t - v[2] > LOCK_SECONDS]:
+            del table[k]
+    if len(table) > MAX_TRACKED:
+        for k in sorted((k for k, v in table.items() if v[1] <= t), key=lambda k: table[k][2])[:len(table) - MAX_TRACKED]:
+            del table[k]
+
+
+def login(username, password, addr=""):
     global DUMMY_HASH
-    key = str(username or "").strip().lower()
-    state = login_failures.get(key)
-    if state and state[1] > now():
+    key = str(username or "").strip().lower()[:64]
+    if locked(login_failures, key) or (addr and locked(addr_failures, addr)):
         raise PermissionError("too many attempts; try again in a few minutes")
     row = db.conn.execute("SELECT * FROM users WHERE username=?", (key,)).fetchone()
     DUMMY_HASH = DUMMY_HASH or hash_password(secrets.token_hex(8))
-    good = check_password(str(password or ""), row["pw"] if row else DUMMY_HASH) and row is not None
+    good = check_password(str(password or "")[:1024], row["pw"] if row else DUMMY_HASH) and row is not None
     if not good:
-        count = (state[0] if state else 0) + 1
-        login_failures[key] = [count, now() + LOCK_SECONDS if count >= LOCK_AFTER else 0]
-        if len(login_failures) > 10000:
-            login_failures.clear()
+        note_failure(login_failures, key, LOCK_AFTER)
+        if addr:
+            note_failure(addr_failures, addr, ADDR_LOCK_AFTER)
+        time.sleep(FAIL_DELAY)
         raise PermissionError("wrong username or password")
     login_failures.pop(key, None)
     with db_lock:

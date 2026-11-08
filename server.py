@@ -8,6 +8,7 @@ Archived files live in a content-addressed store next to the database (<db dir>/
   python3 server.py --restore [SNAPSHOT]  restore hub.db + blobs from HUB_BACKUP_DIR (server must be stopped)
 """
 
+import os
 import sys
 import threading
 from http.server import ThreadingHTTPServer
@@ -23,6 +24,7 @@ from hub.web import Handler
 
 
 def main():
+    os.umask(0o077)  # the database, files and backups hold full transcripts: private to the hub's user
     if sys.argv[1:2] == ["--restore"]:
         BLOB_DIR.mkdir(parents=True, exist_ok=True)
         return restore(sys.argv[2] if len(sys.argv) > 2 else None)

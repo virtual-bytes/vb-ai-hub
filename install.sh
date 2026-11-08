@@ -5,13 +5,26 @@
 set -euo pipefail
 URL="${HUB_URL:?set HUB_URL, e.g. http://hub:8787}"
 URL="${URL%/}"
+case "$URL" in
+  http://localhost*|http://127.0.0.1*|http://\[::1\]*|https://*) ;;
+  *) echo "Warning: $URL isn't https, so the access token and your sessions cross the network unencrypted." >&2 ;;
+esac
 SCRIPT="${BASH_SOURCE[0]:-}"
 if [[ -f "$SCRIPT" ]]; then
   HOOK="$(cd "$(dirname "$SCRIPT")" && pwd)/hook.py"
 else  # piped straight from the hub, so fetch the hook from it, whatever folder this runs in
   HOOK="$HOME/.local/share/vb-ai-hub/hook.py"
   mkdir -p "$(dirname "$HOOK")"
-  curl -fsS -H "Authorization: Bearer ${HUB_TOKEN:-}" -o "$HOOK" "$URL/connect/hook.py"
+  curl -fsS -H "Authorization: Bearer ${HUB_TOKEN:-}" -o "$HOOK.new" "$URL/connect/hook.py"
+  if [[ -n "${HUB_HOOK_SHA256:-}" ]]; then  # the Connect tools page puts the expected checksum in the command
+    got="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$HOOK.new")"
+    if [[ "$got" != "$HUB_HOOK_SHA256" ]]; then
+      rm -f "$HOOK.new"
+      echo "hook.py from $URL doesn't match the checksum on the Connect tools page; nothing was installed." >&2
+      exit 1
+    fi
+  fi
+  mv "$HOOK.new" "$HOOK"
 fi
 mkdir -p ~/.config/vb-ai-hub
 python3 - "$URL" "${HUB_TOKEN:-}" <<'PY'

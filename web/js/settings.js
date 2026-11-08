@@ -29,6 +29,7 @@ function renderSettingsStatus() {
 }
 let settingsFilled = false;
 function fillSettings() {
+  loadHookSum();
   settingsFilled = Object.keys(state.settings).length > 0;
   for (const el of $$("[data-s]")) {
     const k = el.dataset.s, v = state.settings[k] ?? "";
@@ -85,7 +86,12 @@ $("#indexNow").onclick = async () => { await saveSettings(); $("#indexStatus").t
 $("#bookmarklet").href = `javascript:(()=>{const t=document.title.replace(/ [-\\u2013|] (Claude|Open WebUI|ChatGPT|Grok)$/,'');window.open(${JSON.stringify(location.origin + "/")}+'#add?'+new URLSearchParams({title:t,url:location.href}),'_blank')})()`;
 const hubUrl = location.origin;
 $("#mcpCmd").textContent = `claude mcp add --transport http --scope user vb-ai-hub ${hubUrl}/mcp --header "Authorization: Bearer $HUB_TOKEN"`;
-$("#hookCmd").textContent = `curl -fsS -H "Authorization: Bearer $HUB_TOKEN" ${hubUrl}/connect/install.sh | HUB_URL=${hubUrl} HUB_TOKEN=$HUB_TOKEN bash`;
+function showHookCmd(sum) {
+  $("#hookCmd").textContent = `curl -fsS -H "Authorization: Bearer $HUB_TOKEN" ${hubUrl}/connect/install.sh | HUB_URL=${hubUrl} HUB_TOKEN=$HUB_TOKEN${sum ? " HUB_HOOK_SHA256=" + sum : ""} bash`;
+}
+async function loadHookSum() { try { showHookCmd((await api("/connect/sums"))["hook.py"]); } catch {} }
+showHookCmd("");
+$("#plainHttp").hidden = location.protocol === "https:" || ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
 $("#cursorCfg").textContent = JSON.stringify({ mcpServers: { "vb-ai-hub": { url: `${hubUrl}/mcp`, headers: { Authorization: "Bearer ${env:HUB_TOKEN}" } } } }, null, 2);
 $("#codexCfg").textContent = `[mcp_servers.vb-ai-hub]\nurl = "${hubUrl}/mcp"\nbearer_token_env_var = "HUB_TOKEN"`;
 $("#mcpUrl").textContent = `${hubUrl}/mcp`;
@@ -98,6 +104,6 @@ $$("[data-tool]").forEach(b => b.onclick = () => {
 $("#bookmarklet").onclick = e => { e.preventDefault(); toast("Drag it to your bookmarks bar"); };
 function handleHash() {
   const h = location.hash;
-  if (h.startsWith("#add?")) { const p = Object.fromEntries(new URLSearchParams(h.slice(5))); history.replaceState(null, "", location.pathname); openAdd({ ...p, column: "active" }); }
+  if (h.startsWith("#add?")) { const p = Object.fromEntries(new URLSearchParams(h.slice(5))); history.replaceState(null, "", location.pathname); openAdd({ title: (p.title || "").slice(0, 300), url: safeUrl(p.url), column: "active" }); }
   if (h.startsWith("#card=")) openDrawer(decodeURIComponent(h.slice(6)));
 }

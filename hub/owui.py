@@ -2,6 +2,7 @@
 
 import gzip
 import json
+import re
 import ssl
 import threading
 import urllib.error
@@ -60,6 +61,9 @@ def owui_usage(msgs) -> dict:
     return out
 
 
+CHAT_ID = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
 def owui_folders():
     folders = {}
     try:
@@ -81,10 +85,12 @@ def owui_folder_name(folders, fid):
 
 def owui_sync_chat(chat_id, folders=None, archived_at_source=False, force=False):
     """Fetch one chat and update its card. Returns True when the card changed."""
+    if not CHAT_ID.fullmatch(str(chat_id)):
+        raise ValueError("not an Open WebUI chat id")
     base = setting("owui_url")
     folders = folders if folders is not None else owui_folders()
     cid = f"owui:{chat_id}"
-    full = owui_request(f"/api/v1/chats/{quote(chat_id)}")
+    full = owui_request(f"/api/v1/chats/{quote(chat_id, safe="")}")
     upd = parse_ts(full.get("updated_at")) or now()
     row = db.conn.execute("SELECT source_updated, col, archived_at FROM cards WHERE id=?", (cid,)).fetchone()
     if row and not force and row["source_updated"] and row["source_updated"] >= upd:
@@ -168,7 +174,7 @@ def owui_sync_once() -> dict:
             set_setting("owui_apply_removals", "")
             for cid in missing:
                 try:
-                    owui_request(f"/api/v1/chats/{quote(cid[5:])}")
+                    owui_request(f"/api/v1/chats/{quote(cid[5:], safe="")}")
                     continue  # still reachable: not deleted
                 except urllib.error.HTTPError as e:
                     if e.code not in (401, 403, 404):

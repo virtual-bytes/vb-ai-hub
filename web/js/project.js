@@ -92,7 +92,7 @@ const PROJECT_VIEWS = {
         ${tasks.slice(0, 4).map(taskRow).join("") || `<div class="sub">No open tasks.</div>`}
         ${tasks.length > 4 ? `<button class="btn link" data-go="work">All ${tasks.length} tasks</button>` : ""}
         ${p.goals ? `<h3>Goals</h3><p class="sub pre">${esc(p.goals)}</p>` : ""}
-        ${p.links.length ? `<h3>Links</h3>${p.links.map(l => `<a class="plink" href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.label || l.url)}</a>`).join("")}` : ""}
+        ${p.links.length ? `<h3>Links</h3>${p.links.filter(l => safeUrl(l.url)).map(l => `<a class="plink" href="${safeHref(l.url)}" target="_blank" rel="noopener">${esc(l.label || l.url)}</a>`).join("")}` : ""}
         <h3>This project so far</h3>
         <dl class="pfacts"><dt>Items</dt><dd>${d.cards.length}</dd><dt>Documents</dt><dd>${d.docs.length}</dd><dt>Commits and MRs</dt><dd>${d.links.length}</dd>
           ${u.output ? `<dt>Tokens in</dt><dd>${tok(u.input + u.cache_write + u.cache_read)}</dd><dt>Tokens out</dt><dd>${tok(u.output)}</dd>` : ""}</dl>
@@ -127,7 +127,7 @@ const PROJECT_VIEWS = {
   activity(d) {
     const rows = [
       ...d.worklog.map(w => ({ at: w.at, kind: "Work log", html: `<a href="#" data-card="${esc(w.card_id)}">${esc(w.card_title)}</a><span class="sub">${esc(firstLine(w.text))}</span>` })),
-      ...d.links.map(l => ({ at: l.at, kind: l.kind === "commit" ? "Commit" : l.kind === "mr" ? "MR" : "PR", html: l.url ? `<a href="${esc(l.url)}" target="_blank" rel="noopener">${esc(l.title || l.key)}</a>` : esc(l.title || l.key) })),
+      ...d.links.map(l => ({ at: l.at, kind: l.kind === "commit" ? "Commit" : l.kind === "mr" ? "MR" : "PR", html: safeUrl(l.url) ? `<a href="${safeHref(l.url)}" target="_blank" rel="noopener">${esc(l.title || l.key)}</a>` : esc(l.title || l.key) })),
       ...d.docs.map(x => ({ at: x.created_at, kind: KIND[x.kind] || x.kind, html: `<button class="btn link" data-act="doc" data-owner="${esc(x.card_id)}" data-path="${esc(x.path)}">${esc(x.name)}</button>` })),
     ].sort((a, b) => b.at - a.at).slice(0, 60);
     return rows.length ? `<div class="pw-list">${rows.map(r => `<div class="arow"><span class="arch" title="${esc(fullDate(r.at))}">${ago(r.at)}</span><span class="t">${r.html}</span><span class="arch">${esc(r.kind)}</span></div>`).join("")}</div>`
@@ -144,7 +144,7 @@ const PROJECT_VIEWS = {
       <label class="field" style="margin-top:14px">Goals<textarea class="short" id="pGoals" placeholder="Outcomes, milestones, definition of done">${esc(p.goals)}</textarea></label>
       <label class="switch" style="margin-top:12px"><input type="checkbox" id="pContext" ${p.context ? "checked" : ""}> Give new Claude Code sessions in this project its handoff, open tasks and recent work</label>
       <h3>Links <button class="btn small" id="pAddLink">Add</button></h3>
-      <div class="links-list" id="pLinks">${p.links.map((l, i) => `<div class="lk"><input class="input" data-li="${i}" data-k="label" value="${esc(l.label)}" placeholder="Label"><input class="input" data-li="${i}" data-k="url" value="${esc(l.url)}" placeholder="https://"><a class="btn small" href="${esc(l.url)}" target="_blank" rel="noopener">Open</a><button class="btn small" data-rmlink="${i}">Remove</button></div>`).join("") || `<div class="sub">Repo, staging URL, docs, tickets…</div>`}</div>
+      <div class="links-list" id="pLinks">${p.links.map((l, i) => `<div class="lk"><input class="input" data-li="${i}" data-k="label" value="${esc(l.label)}" placeholder="Label"><input class="input" data-li="${i}" data-k="url" value="${esc(l.url)}" placeholder="https://"><a class="btn small" href="${safeHref(l.url)}" target="_blank" rel="noopener">Open</a><button class="btn small" data-rmlink="${i}">Remove</button></div>`).join("") || `<div class="sub">Repo, staging URL, docs, tickets…</div>`}</div>
       <h3>Matching rules</h3>
       <div class="sub" style="margin-bottom:8px">New and existing items that match land in this project automatically, unless you set an item's project by hand.</div>
       <div class="chips">${p.rules.map(r => `<span class="rule"><span class="f">${RULE_LABEL[r.field]}</span> <b>${esc(r.pattern)}</b><button title="Remove rule" data-rmrule="${r.id}">×</button></span>`).join("") || `<span class="sub">No rules yet.</span>`}</div>

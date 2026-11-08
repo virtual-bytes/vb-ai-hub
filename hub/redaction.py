@@ -19,9 +19,22 @@ SECRET_PATTERNS = [
     ("slack-token", re.compile(r"\bxox[abprs]-[A-Za-z0-9-]{10,}")),
     ("aws-key", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
     ("google-key", re.compile(r"\bAIza[0-9A-Za-z_-]{35}\b")),
+    ("stripe-key", re.compile(r"\b(?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{16,}|\bwhsec_[A-Za-z0-9]{24,}")),
+    ("slack-webhook", re.compile(r"https://hooks\.slack\.com/(?:services|workflows|triggers)/[A-Za-z0-9/_-]{20,}")),
+    ("discord-webhook", re.compile(r"https://(?:\w+\.)?discord(?:app)?\.com/api/webhooks/\d+/[A-Za-z0-9_-]{20,}")),
+    ("telegram-token", re.compile(r"\b\d{8,10}:[A-Za-z0-9_-]{33,40}\b")),
+    ("sendgrid-key", re.compile(r"\bSG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}")),
+    ("twilio-key", re.compile(r"\bSK[0-9a-f]{32}\b")),
+    ("npm-token", re.compile(r"\bnpm_[A-Za-z0-9]{36}\b")),
+    ("pypi-token", re.compile(r"\bpypi-AgE[A-Za-z0-9_-]{50,}")),
+    ("huggingface-token", re.compile(r"\bhf_[A-Za-z0-9]{30,}\b")),
+    ("digitalocean-token", re.compile(r"\bdo[opr]_v1_[a-f0-9]{64}\b")),
+    ("google-oauth", re.compile(r"\bya29\.[A-Za-z0-9_-]{20,}")),
+    ("azure-key", re.compile(r"(?i)(\b(?:AccountKey|SharedAccessKey)=)([A-Za-z0-9+/=]{20,})")),
+    ("basic-auth", re.compile(r"(?i)(\bbasic[ \t]+)(?!\[REDACTED)([A-Za-z0-9+/]{12,}={0,2})(?![A-Za-z0-9+/=])")),
     ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")),
     ("bearer", re.compile(r"(?i)(\bbearer[ \t]+)(?!\[REDACTED)([A-Za-z0-9._~+/=-]{16,})")),
-    ("url-credentials", re.compile(r"(\b[a-z][a-z0-9+.-]*://[^/\s:@\"']+:)(?!\[REDACTED)([^@\s/\"']{3,})(@)")),
+    ("url-credentials", re.compile(r"(\b[a-z][a-z0-9+.-]*://[^/\s:@\"']+:)(?!\[REDACTED)([^@\s\"'#?]{3,}?)(@)(?=[^@\s]*(?:[/\s\"']|$))")),
     # key=value / key: value on the same line. Skips placeholders ($VAR, <x>, `code`, {x}), values on the next
     # line, and plain lowercase words ("hashed", "command", "certbot").
     ("assignment", re.compile(
@@ -42,7 +55,7 @@ def redact(text: str) -> str:
     for v in known_secrets():
         text = text.replace(v, "[REDACTED:hub-secret]")
     for name, rx in SECRET_PATTERNS:
-        if name in ("bearer", "url-credentials", "assignment"):
+        if name in ("bearer", "url-credentials", "assignment", "azure-key", "basic-auth"):
             text = rx.sub(lambda m: m.group(1) + f"[REDACTED:{name}]" + (m.group(3) if name == "url-credentials" else ""), text)
         else:
             text = rx.sub(f"[REDACTED:{name}]", text)

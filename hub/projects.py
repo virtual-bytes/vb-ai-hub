@@ -10,6 +10,7 @@ from .util import now
 from .db import db_lock
 from .live import broadcast
 from .records import index_card
+from .redaction import redact
 
 
 def ensure_project(name: str):
@@ -34,16 +35,53 @@ def load_rules():
     return sorted((dict(r) for r in rows), key=lambda r: (order.get(r["field"], 9), -len(r["pattern"])))
 
 
+MAX_REGEX = 100
+# A quantified group followed by another quantifier, like (a+)+ or (a|b)*{2}: the shapes that make
+# Python's regex engine take exponential time. Python has no regex timeout, so these are refused outright.
+NESTED = re.compile(r"\)[*+?]|\)\{\d")
+BACKREF = re.compile(r"\\[1-9]|\(\?P=")
+_compiled: dict[str, re.Pattern | None] = {}
+
+
+def is_regex(p) -> bool:
+    return len(p) > 2 and p.startswith("/") and p.endswith("/")
+
+
+def check_rule_pattern(field, p):
+    """Raise ValueError for a regular expression rule that could stall the hub."""
+    if field != "title" or not is_regex(p):
+        return
+    body = p[1:-1]
+    if len(body) > MAX_REGEX:
+        raise ValueError(f"a regular expression rule can be at most {MAX_REGEX} characters")
+    if NESTED.search(body) or BACKREF.search(body):
+        raise ValueError("this regular expression repeats a group; use a simpler pattern or a plain word")
+    if len(re.findall(r"(?<!\\)[*+]|\{\d*,\}", body)) > 3:
+        raise ValueError("a regular expression rule can repeat at most three times (*, + or {n,})")
+    try:
+        re.compile(body)
+    except re.error as e:
+        raise ValueError(f"not a valid regular expression: {e}")
+
+
+def rule_regex(p):
+    if p not in _compiled:
+        try:
+            check_rule_pattern("title", p)
+            _compiled[p] = re.compile(p[1:-1], re.I)
+        except ValueError:
+            _compiled[p] = None  # an older rule that's no longer allowed matches nothing
+    return _compiled[p]
+
+
 def rule_matches(rule, title, cwd, source_project) -> bool:
     p = rule["pattern"].strip()
     if not p:
         return False
     if rule["field"] == "title":
-        if len(p) > 2 and p.startswith("/") and p.endswith("/"):
-            try:
-                return bool(re.search(p[1:-1], title or "", re.I))
-            except re.error:
-                return False
+        if is_regex(p):
+            rx = rule_regex(p)
+            return bool(rx and rx.search((title or "")[:200]))
         return p.lower() in (title or "").lower()
     if rule["field"] == "path":
         return bool(cwd) and (cwd == p.rstrip("/") or cwd.startswith(p.rstrip("/") + "/"))
@@ -156,13 +194,13 @@ def owner_meta(owner: str) -> dict:
 
 
 def create_task(b) -> dict:
-    p = project_by_id(b.get("project_id", "")) or project_by_name(b.get("project", ""))
-    if not p or not (b.get("title") or "").strip():
+    p = project_by_id(str(b.get("project_id") or "")) or project_by_name(str(b.get("project") or ""))
+    if not p or not str(b.get("title") or "").strip():
         raise ValueError("project and title required")
     tid = secrets.token_hex(5)
     with db_lock:
         db.conn.execute("INSERT INTO tasks(id, project_id, title, notes, priority, due, created_at, updated_at) VALUES (?,?,?,?,?,?,?,?)",
-                        (tid, p["id"], b["title"].strip()[:200], b.get("notes") or "", b.get("priority") if b.get("priority") in PRIORITIES else "normal",
+                        (tid, p["id"], redact(str(b["title"]).strip())[:200], redact(str(b.get("notes") or ""))[:20000], b.get("priority") if b.get("priority") in PRIORITIES else "normal",
                          b.get("due") if re.fullmatch(r"\d{4}-\d{2}-\d{2}", str(b.get("due") or "")) else "", now(), now()))
         index_task(tid)
         db.conn.commit()
@@ -173,7 +211,7 @@ def create_task(b) -> dict:
 def update_task(tid, b) -> dict:
     if not db.conn.execute("SELECT 1 FROM tasks WHERE id=?", (tid,)).fetchone():
         raise LookupError("task not found")
-    upd = {k: str(b[k])[:20000] for k in ("title", "notes") if k in b}
+    upd = {k: redact(str(b[k]))[:200 if k == "title" else 20000] for k in ("title", "notes") if k in b}
     if b.get("status") in ("open", "done"):
         upd["status"] = b["status"]
     if b.get("priority") in PRIORITIES:

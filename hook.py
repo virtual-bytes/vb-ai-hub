@@ -68,7 +68,7 @@ def project_for(cwd: str) -> str:
     if not cwd:
         return ""
     try:
-        root = subprocess.run(["git", "-C", cwd, "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=1).stdout.strip()
+        root = subprocess.run(["git", "--no-optional-locks", "-C", cwd, "rev-parse", "--show-toplevel"], capture_output=True, text=True, timeout=1).stdout.strip()
         if root:
             return Path(root).name
     except (OSError, subprocess.SubprocessError):
@@ -159,7 +159,7 @@ MR_RE = re.compile(rb"https?://[^\s\"'\\)<>]+?/-/merge_requests/\d+|https://gith
 
 def git(repo, *args):
     try:
-        return subprocess.run(["git", "-C", repo, *args], capture_output=True, text=True, timeout=5).stdout.strip()
+        return subprocess.run(["git", "--no-optional-locks", "-C", repo, *args], capture_output=True, text=True, timeout=5).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return ""
 

@@ -3,6 +3,8 @@
 import json
 
 from . import db
+from .db import db_lock
+from .records import log_event
 from .config import PRIORITIES
 from .util import clip, iso
 from .projects import create_task, project_by_name, update_task
@@ -61,12 +63,24 @@ def list_tasks(args):
     return [dict(r) for r in rows]
 
 
+def mcp_event(tid, detail):
+    """Task changes made through MCP go on the task's activity, so a burst of edits from a session is easy to spot."""
+    with db_lock:
+        log_event(f"task:{tid}", "mcp", detail)
+        db.conn.commit()
+
+
 def add_task(args):
-    return create_task({**args, "project_id": project_id(args["project"])})
+    task = create_task({**args, "project_id": project_id(args["project"])})
+    mcp_event(task["id"], f"added through MCP: {task['title']}")
+    return task
 
 
 def set_task(args):
-    return update_task(args["task_id"], {k: v for k, v in args.items() if k != "task_id"})
+    changes = {k: v for k, v in args.items() if k != "task_id"}
+    task = update_task(args["task_id"], changes)
+    mcp_event(task["id"], "changed through MCP: " + ", ".join(sorted(changes)))
+    return task
 
 
 PRIORITY = {"type": "string", "enum": list(PRIORITIES)}

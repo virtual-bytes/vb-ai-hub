@@ -4,12 +4,14 @@ import hashlib
 import json
 import re
 import secrets
+import tempfile
 from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 from . import db
 from .config import COLUMNS, DEFAULT_SETTINGS, HERE, RULE_FIELDS
-from .util import is_text, now, safe_name
+from .util import attachment_header, clean_mime, is_text, now, safe_name, safe_url
+from .redaction import redact
 from .db import db_lock, public_settings, set_setting, setting
 from .live import broadcast, status_json
 from .records import card_dict, card_with_counts, get_card, push_card
@@ -17,6 +19,7 @@ from .projects import (
     create_task,
     update_task,
     index_project,
+    check_rule_pattern,
     load_rules,
     merge_projects,
     project_by_id,
@@ -66,6 +69,8 @@ class ApiRoutes:
         seg = path.split("/")[1:]  # ['api', 'cards', '<id>', 'sub']
         if path == "/mcp":
             return self.mcp_endpoint(method)
+        if path == "/connect/sums" and method == "GET":
+            return self.send_json({n: hashlib.sha256((HERE / n).read_bytes()).hexdigest() for n in ("hook.py", "install.sh")})
         if path in ("/connect/hook.py", "/connect/install.sh") and method == "GET":
             return self.send_bytes((HERE / path.rsplit("/", 1)[-1]).read_bytes(), "text/plain; charset=utf-8")
         if path == "/api/stream" and method == "GET":
@@ -83,7 +88,10 @@ class ApiRoutes:
         if path == "/api/cards" and method == "POST":
             return self.send_json(self.create_manual(self.read_json()), 201)
         if path == "/api/cards/bulk" and method == "POST":
-            return self.send_json(bulk(self.read_json()))
+            b = self.read_json()
+            if b.get("purge") and not self.is_admin():
+                raise PermissionError("only admins can delete forever")
+            return self.send_json(bulk(b))
         if path == "/api/events" and method == "POST":
             return self.send_json(handle_hook(self.read_json()))
         if path == "/api/ingest" and method == "POST":
@@ -241,7 +249,10 @@ class ApiRoutes:
 
     def put_attachment(self, owner, q):
         name = q.get("name") or "file"
-        res = add_attachment(owner, q.get("kind") or "upload", name, q.get("path") or name, self.body(),
+        kind = q.get("kind") or "upload"
+        if kind not in ("upload", "doc", "handoff", "digest", "transcript", "plan", "memory"):
+            kind = "upload"
+        res = add_attachment(owner, kind, name, q.get("path") or name, self.body(),
                              q.get("mime") or "", replace=q.get("replace") == "1", at=float(q["at"]) if q.get("at") else None)
         return self.send_json(res, 201 if res["added"] else 200)
 
@@ -252,11 +263,12 @@ class ApiRoutes:
         if not row:
             raise LookupError("not found")
         data = blob_path(sha).read_bytes()
-        mime = row["mime"] if is_text(row["mime"], row["name"]) else "application/octet-stream"
-        if mime.startswith("text/html"):
+        mime = clean_mime(row["mime"], row["name"])
+        mime = mime if is_text(mime, row["name"]) else "application/octet-stream"
+        if mime.startswith("text/html") or "svg" in mime or "xml" in mime:
             mime = "text/plain"
         return self.send_bytes(data, mime + ("; charset=utf-8" if mime.startswith("text/") else ""), extra={
-            "Content-Disposition": f"attachment; filename=\"{safe_name(row['name'])}\"", "Content-Security-Policy": "default-src 'none'"})
+            "Content-Disposition": attachment_header(safe_name(row["name"])), "Content-Security-Policy": "default-src 'none'; sandbox"})
 
     def delete_attachment(self, aid):
         with db_lock:
@@ -287,7 +299,7 @@ class ApiRoutes:
             pid = secrets.token_hex(5)
             with db_lock:
                 db.conn.execute("INSERT INTO projects(id, name, description, manual, created_at, updated_at) VALUES (?,?,?,1,?,?)",
-                                (pid, name, b.get("description") or "", now(), now()))
+                                (pid, name, redact(str(b.get("description") or ""))[:20000], now(), now()))
                 index_project(pid)
                 db.conn.commit()
             broadcast("reload", {"reason": "project"})
@@ -308,26 +320,30 @@ class ApiRoutes:
             return self.send_json(project_usage(pid, self.query.get("today", "")))
         if len(rest) == 2 and rest[1] == "bundle" and method == "GET":
             p = project_by_id(pid) or {}
-            return self.send_bytes(project_bundle(pid, self.query.get("transcripts") == "1"), "application/zip", extra={
-                "Content-Disposition": f"attachment; filename=\"{safe_name(p.get('name', 'project'))}.zip\""})
+            with tempfile.TemporaryFile() as f:
+                project_bundle(pid, self.query.get("transcripts") == "1", f)
+                return self.send_file(f, "application/zip", {"Content-Disposition": attachment_header(safe_name(p.get("name", "project")) + ".zip")})
         if len(rest) == 1 and method == "PATCH":
             b = self.read_json()
             p = project_by_id(pid)
             if not p:
                 raise LookupError("project not found")
-            if b.get("name") and b["name"].strip() != p["name"]:
-                pid = rename_or_merge_project(pid, b["name"])
+            if b.get("name") and str(b["name"]).strip() != p["name"]:
+                if not self.is_admin():
+                    raise PermissionError("only admins can rename or merge projects")
+                pid = rename_or_merge_project(pid, str(b["name"]))
             upd = {}
             if "status" in b and b["status"] in ("active", "paused", "done", "archived"):
                 upd["status"] = b["status"]
             for k in ("description", "goals"):
                 if k in b:
-                    upd[k] = str(b[k])[:20000]
+                    upd[k] = redact(str(b[k]))[:20000]
             if "context" in b:
                 upd["context"] = 1 if b["context"] else 0
             if "links" in b:
-                upd["links"] = json.dumps([{"label": str(l.get("label", ""))[:80], "url": str(l.get("url", ""))[:500]}
-                                           for l in b["links"] if l.get("url")][:50])
+                links = [{"label": redact(str(l.get("label", "")))[:80], "url": redact(safe_url(l.get("url")))[:500]}
+                         for l in b["links"] if isinstance(l, dict)]
+                upd["links"] = json.dumps([l for l in links if l["url"]][:50])
             if upd:
                 upd["updated_at"], upd["manual"] = now(), 1
                 with db_lock:
@@ -384,11 +400,12 @@ class ApiRoutes:
     def rules_api(self, method, rest):
         if not rest and method == "POST":
             b = self.read_json()
-            if b.get("field") not in RULE_FIELDS or not (b.get("pattern") or "").strip() or not project_by_id(b.get("project_id", "")):
+            if b.get("field") not in RULE_FIELDS or not str(b.get("pattern") or "").strip() or not project_by_id(b.get("project_id", "")):
                 raise ValueError("project_id, field (title|path|source_project) and pattern required")
+            check_rule_pattern(b["field"], str(b["pattern"]).strip())
             with db_lock:
                 db.conn.execute("INSERT INTO rules(project_id, field, pattern, created_at) VALUES (?,?,?,?)",
-                                (b["project_id"], b["field"], b["pattern"].strip()[:300], now()))
+                                (b["project_id"], b["field"], redact(str(b["pattern"]).strip())[:300], now()))
                 db.conn.commit()
             return self.send_json({"moved": reapply_rules()}, 201)
         if rest and method == "DELETE":
@@ -406,6 +423,8 @@ class ApiRoutes:
                 return self.send_json(patch_card(cid, self.read_json()))
             if method == "DELETE":
                 if self.query.get("purge") == "1":
+                    if not self.is_admin():
+                        raise PermissionError("only admins can delete forever")
                     delete_card(cid)
                 else:
                     trash_card(cid, "deleted by hand")
@@ -438,12 +457,13 @@ class ApiRoutes:
             return self.send_json({"ok": True})
         if sub == "bundle" and method == "GET":
             card = get_card(cid) or {}
-            return self.send_bytes(bundle(cid), "application/zip", extra={
-                "Content-Disposition": f"attachment; filename=\"{safe_name(card.get('title', 'card'))}.zip\""})
+            with tempfile.TemporaryFile() as f:
+                bundle(cid, f)
+                return self.send_file(f, "application/zip", {"Content-Disposition": attachment_header(safe_name(card.get("title", "card")) + ".zip")})
         raise LookupError("not found")
 
     def create_manual(self, body):
-        url = (body.get("url") or "").strip()
+        url = safe_url(body.get("url"))
         owui = setting("owui_url")
         if "claude.ai/chat/" in url:
             source = "chat"

@@ -2,7 +2,11 @@
 let signingIn = null, me = null;
 function signIn() { return signingIn ||= runSignIn().finally(() => { signingIn = null; }); }
 async function runSignIn() {
-  const st = await fetch("/api/auth/status", { headers: authHeaders() }).then(r => r.json()).catch(() => null);
+  let st = await fetch("/api/auth/status", { headers: authHeaders() }).then(r => r.status === 401 ? { badToken: true } : r.json()).catch(() => null);
+  if (st?.badToken) {  // a wrong saved token is refused outright, so drop it and sign in normally
+    store("kb.token"); toast("The saved access token was wrong, so the hub removed it");
+    st = await fetch("/api/auth/status").then(r => r.json()).catch(() => null);
+  }
   if (!st) return toast("Can't reach the hub");
   if (st.user) { me = st.user; return; }
   let error = "";

@@ -14,5 +14,5 @@ When you use it:
 
 - Don't publish port 8787. Remove `ports` from `docker-compose.yml` and put the hub on the proxy's Docker network, so nothing can skip sign-in or forge the proxy's headers.
 - Set `HUB_PROXY_SECRET` in `.env`, and pass it to the container in `docker-compose.yml`.
-- Requests with `Authorization: Bearer` or `?token=` and `/healthz` skip Authentik, and the hub checks the token itself.
+- Requests with `Authorization: Bearer` and `/healthz` skip Authentik, and the hub checks the token itself. A request with a wrong token is refused, even if it also carries a hub session cookie.
 - If Authentik is down, remove the proxy's Advanced block and sign in with the token under Settings.

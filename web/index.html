@@ -169,8 +169,9 @@
 <span class="seg" role="group" aria-label="Tool" id="toolSeg"><button type="button" data-tool="claude" aria-pressed="true">Claude Code</button><button type="button" data-tool="cursor" aria-pressed="false">Cursor</button><button type="button" data-tool="codex" aria-pressed="false">Codex</button><button type="button" data-tool="other" aria-pressed="false">Other tools</button></span>
 <div class="tool-pane" data-tool-body="claude">
   <h3>Track this machine's sessions</h3>
-  <p>Run this on each machine that uses Claude Code, with your access token in place of <code>$HUB_TOKEN</code>. It adds the hooks that send sessions to the hub and brings in the ones already there.</p>
+  <p>Run this on each machine that uses Claude Code. It adds the hooks that send sessions to the hub and brings in the ones already there. First run <code>read -rs HUB_TOKEN &amp;&amp; export HUB_TOKEN</code> and paste your access token, so it stays out of your shell history. The command checks the hook it downloads against a checksum.</p>
   <div class="cmd"><code id="hookCmd"></code><button class="btn small" type="button" data-copy="hookCmd">Copy</button></div>
+  <p class="sub" id="plainHttp" hidden>This hub isn't on https, so the token and your sessions cross the network unencrypted. Put it behind a reverse proxy with TLS before connecting other machines.</p>
   <h3>Let Claude use the library</h3>
   <p>Run this once. Claude Code keeps the token in its own settings.</p>
   <div class="cmd"><code id="mcpCmd"></code><button class="btn small" type="button" data-copy="mcpCmd">Copy</button></div>
