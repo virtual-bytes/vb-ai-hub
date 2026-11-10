@@ -1,4 +1,4 @@
-"""Incoming events: Claude Code hooks, the ingest API and claude.ai exports."""
+"""Incoming events: Claude Code and Cursor hooks, the ingest API and claude.ai exports."""
 
 import gzip
 import json
@@ -15,11 +15,19 @@ from .usage import add_usage
 
 
 def handle_hook(ev: dict) -> dict:
+    return handle_session_event(ev, "code")
+
+
+def handle_cursor(ev: dict) -> dict:
+    return handle_session_event(ev, "cursor")
+
+
+def handle_session_event(ev: dict, source: str) -> dict:
     sid = str(ev.get("session_id") or "")[:100]
     if not sid:
         raise ValueError("session_id required")
     name = ev.get("hook_event_name") or ev.get("event") or "update"
-    card_id = f"code:{sid}"
+    card_id = f"{source}:{sid}"
     existing = get_card(card_id)
     auto = setting("auto_flow") == "true"
     fields = {
@@ -48,7 +56,10 @@ def handle_hook(ev: dict) -> dict:
     initial = initial or ("needs_me" if name == "Stop" else "active")
     if not fields.get("title") and not existing:
         fields["title"] = str(ev.get("prompt") or "")[:80] or f"Session {sid[:8]}"
-    return upsert(card_id, "code", fields, initial, str(name)[:40], str(ev.get("prompt") or ev.get("source") or ev.get("reason") or ""))
+    card = upsert(card_id, source, fields, initial, str(name)[:40], str(ev.get("prompt") or ev.get("source") or ev.get("reason") or ""))
+    if ev.get("usage"):
+        add_usage(card_id, {"models": ev["usage"], "days": ev.get("days")})
+    return card
 
 
 def handle_ingest(ev: dict) -> dict:
@@ -59,8 +70,11 @@ def handle_ingest(ev: dict) -> dict:
         raise ValueError("source and id required")
     card_id = f"{source}:{ext}"
     existing = get_card(card_id)
-    fields = {k: ev.get(k) or None for k in ("title", "project", "url", "status", "model", "notes", "last_prompt", "summary")}
+    fields = {k: ev.get(k) or None for k in ("title", "project", "url", "status", "model", "notes", "last_prompt", "summary",
+                                             "cwd", "host", "session_id", "msg_count")}
     fields["last_activity"] = ev.get("at") or None
+    if ev.get("created_at"):
+        fields["created_at"] = ev["created_at"]
     if ev.get("column") in COLUMNS and existing:
         fields["column"] = ev["column"]
     if not existing and not fields["title"]:
@@ -69,7 +83,7 @@ def handle_ingest(ev: dict) -> dict:
     if ev.get("worklog"):
         add_worklog(card_id, [{"text": ev["worklog"], "at": ev.get("at"), "ref": ev.get("ref")}])
     if ev.get("usage"):
-        add_usage(card_id, {"models": ev["usage"]})
+        add_usage(card_id, {"models": ev["usage"], "days": ev.get("days")})
     if ev.get("archived"):
         with db_lock:
             db.conn.execute("UPDATE cards SET archived_at=COALESCE(archived_at, ?) WHERE id=?", (now(), card_id))

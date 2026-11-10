@@ -28,9 +28,9 @@ from .projects import (
     rename_or_merge_project,
 )
 from .archive import add_attachment, add_files, add_links, add_worklog, blob_path, bundle, card_archive, gc_blobs
-from .cards import bulk, delete_card, patch_card, reconcile_code, restore_card, trash_card, upsert
+from .cards import bulk, delete_card, patch_card, reconcile_source, restore_card, trash_card, upsert
 from .usage import add_usage, parse_prices, project_usage, set_gpu_usage, usage_report, usage_stats
-from .sources import handle_hook, handle_ingest, import_export
+from .sources import handle_cursor, handle_hook, handle_ingest, import_export
 from .litellm import litellm_wake
 from .owui import owui_wake
 from .notifications import notify
@@ -70,8 +70,9 @@ class ApiRoutes:
         if path == "/mcp":
             return self.mcp_endpoint(method)
         if path == "/connect/sums" and method == "GET":
-            return self.send_json({n: hashlib.sha256((HERE / n).read_bytes()).hexdigest() for n in ("hook.py", "install.sh")})
-        if path in ("/connect/hook.py", "/connect/install.sh") and method == "GET":
+            return self.send_json({n: hashlib.sha256((HERE / n).read_bytes()).hexdigest()
+                                   for n in ("hook.py", "install.sh", "cursor.py", "install-cursor.sh")})
+        if path in ("/connect/hook.py", "/connect/install.sh", "/connect/cursor.py", "/connect/install-cursor.sh") and method == "GET":
             return self.send_bytes((HERE / path.rsplit("/", 1)[-1]).read_bytes(), "text/plain; charset=utf-8")
         if path == "/api/stream" and method == "GET":
             return self.stream()
@@ -94,12 +95,16 @@ class ApiRoutes:
             return self.send_json(bulk(b))
         if path == "/api/events" and method == "POST":
             return self.send_json(handle_hook(self.read_json()))
+        if path == "/api/cursor" and method == "POST":
+            return self.send_json(handle_cursor(self.read_json()))
         if path == "/api/ingest" and method == "POST":
             return self.send_json(handle_ingest(self.read_json()))
         if path == "/api/import" and method == "POST":
             return self.send_json(import_export(self.read_json(), prune=q.get("prune") == "1"))
         if path == "/api/reconcile/code" and method == "POST":
-            return self.send_json(reconcile_code(self.read_json()))
+            return self.send_json(reconcile_source(self.read_json(), "code"))
+        if path == "/api/reconcile/cursor" and method == "POST":
+            return self.send_json(reconcile_source(self.read_json(), "cursor"))
         if path == "/api/settings" and method == "POST":
             return self.save_settings(self.read_json())
         if path == "/api/integrations/owui/sync" and method == "POST":

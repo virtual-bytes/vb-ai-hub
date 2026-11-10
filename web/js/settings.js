@@ -30,6 +30,7 @@ function renderSettingsStatus() {
 let settingsFilled = false;
 function fillSettings() {
   loadHookSum();
+  loadCursorSum();
   settingsFilled = Object.keys(state.settings).length > 0;
   for (const el of $$("[data-s]")) {
     const k = el.dataset.s, v = state.settings[k] ?? "";
@@ -91,6 +92,11 @@ function showHookCmd(sum) {
 }
 async function loadHookSum() { try { showHookCmd((await api("/connect/sums"))["hook.py"]); } catch {} }
 showHookCmd("");
+function showCursorCmd(sum) {
+  $("#cursorInstallCmd").textContent = `curl -fsS -H "Authorization: Bearer $HUB_TOKEN" ${hubUrl}/connect/install-cursor.sh | HUB_URL=${hubUrl} HUB_TOKEN=$HUB_TOKEN${sum ? " HUB_CURSOR_SHA256=" + sum : ""} bash`;
+}
+async function loadCursorSum() { try { showCursorCmd((await api("/connect/sums"))["cursor.py"]); } catch {} }
+showCursorCmd("");
 $("#plainHttp").hidden = location.protocol === "https:" || ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
 $("#cursorCfg").textContent = JSON.stringify({ mcpServers: { "vb-ai-hub": { url: `${hubUrl}/mcp`, headers: { Authorization: "Bearer ${env:HUB_TOKEN}" } } } }, null, 2);
 $("#codexCfg").textContent = `[mcp_servers.vb-ai-hub]\nurl = "${hubUrl}/mcp"\nbearer_token_env_var = "HUB_TOKEN"`;
