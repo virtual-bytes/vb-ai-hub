@@ -1645,6 +1645,363 @@ class Security(AccountHelpers, Hub):
         self.assertIn("mcp", kinds)
 
 
+class OpenMode(Hub):
+    """Findings 20 and 29 from the second review: a hub with no token and no accounts, as a local install runs."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.port = free_port()
+        cls.base = f"http://127.0.0.1:{cls.port}"
+        env = {k: v for k, v in os.environ.items() if not k.startswith(("HUB_", "KANBAN_"))}
+        env.update(HUB_PORT=str(cls.port), HUB_DB=f"{cls.tmp.name}/hub.db", HUB_ALLOWED_HOSTS="hub.example", HUB_MAX_CONNECTIONS="8")
+        cls.proc = subprocess.Popen([sys.executable, str(ROOT / "server.py")], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        for _ in range(100):
+            try:
+                urllib.request.urlopen(cls.base + "/healthz", timeout=1)
+                return
+            except OSError:
+                time.sleep(0.05)
+        raise RuntimeError("server did not start")
+
+    def send(self, method, path, body=None, headers=None):
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=10)
+        c.request(method, path, body=body, headers=headers or {})
+        r = c.getresponse()
+        r.read()
+        c.close()
+        return r.status
+
+    def test_other_host_names_are_refused(self):
+        """A page that re-points its own domain at the hub (DNS rebinding) can't read or change it."""
+        for host in (f"127.0.0.1:{self.port}", f"localhost:{self.port}", "hub.example", f"[::1]:{self.port}", "10.1.2.3:8787"):
+            self.assertEqual(self.send("GET", "/api/cards", headers={"Host": host}), 200, host)
+        for host in ("evil.example", f"evil.example:{self.port}", "rebind.attacker.test"):
+            self.assertEqual(self.send("GET", "/api/cards", headers={"Host": host}), 421, host)
+            self.assertEqual(self.send("POST", "/api/settings", json.dumps({"local_label": "x"}), {"Host": host, "Content-Type": "application/json"}), 421, host)
+
+    def test_writes_from_another_page_are_refused(self):
+        body = json.dumps({"local_label": "changed"})
+        for h in ({"Origin": "https://evil.example", "Content-Type": "text/plain"},
+                  {"Origin": "https://evil.example", "Content-Type": "application/json"},
+                  {"Origin": "null", "Content-Type": "application/json"},
+                  {"Sec-Fetch-Site": "same-site", "Origin": "http://localhost:9", "Content-Type": "application/json"},
+                  {"Sec-Fetch-Site": "cross-site", "Content-Type": "application/json"}):
+            self.assertEqual(self.send("POST", "/api/settings", body, h), 403, h)
+        # A plain-text POST is what a page can send without asking first, so cookie and open-mode writes must be JSON.
+        self.assertEqual(self.send("POST", "/api/settings", body, {"Content-Type": "text/plain"}), 415)
+        self.assertEqual(self.send("POST", "/api/settings", body, {"Content-Type": "application/x-www-form-urlencoded"}), 415)
+        self.assertEqual(json.loads(urllib.request.urlopen(self.base + "/api/cards").read())["settings"]["local_label"], "Local models")
+        same = {"Origin": f"http://127.0.0.1:{self.port}", "Sec-Fetch-Site": "same-origin", "Content-Type": "application/json"}
+        self.assertEqual(self.send("POST", "/api/settings", json.dumps({"local_label": ""}), same), 200)
+        self.assertEqual(self.send("POST", "/api/settings", json.dumps({"local_label": ""}), {"Content-Type": "application/json"}), 200)
+
+    def test_setup_from_another_page_is_refused(self):
+        body = json.dumps({"username": "intruder", "password": "intruder-password-1"})
+        self.assertEqual(self.send("POST", "/api/auth/setup", body, {"Origin": "https://evil.example", "Content-Type": "text/plain"}), 403)
+        self.assertEqual(self.send("POST", "/api/auth/setup", body, {"Content-Type": "text/plain"}), 415)
+        self.assertTrue(json.loads(urllib.request.urlopen(self.base + "/api/auth/status").read())["setup_needed"])
+
+    def test_idle_connections_are_capped(self):
+        idle = [socket.create_connection(("127.0.0.1", self.port)) for _ in range(8)]
+        try:
+            time.sleep(0.3)
+            extra = socket.create_connection(("127.0.0.1", self.port))
+            extra.settimeout(3)
+            extra.sendall(b"GET /healthz HTTP/1.1\r\nHost: localhost\r\n\r\n")
+            try:
+                self.assertEqual(extra.recv(100), b"")  # closed straight away
+            except ConnectionResetError:
+                pass
+            extra.close()
+        finally:
+            for s in idle:
+                s.close()
+        time.sleep(0.3)
+        self.assertEqual(self.send("GET", "/healthz"), 200)
+
+    def test_server_header_has_no_version(self):
+        r = urllib.request.urlopen(self.base + "/healthz")
+        self.assertNotIn("Python", r.headers.get("Server", ""))
+
+
+class SecondReview(AccountHelpers, Hub):
+    """One or more tests per finding in the second security review (November 2026), numbered as in the report."""
+
+    def send(self, method, path, body=None, headers=None):
+        c = http.client.HTTPConnection("127.0.0.1", self.port, timeout=30)
+        c.request(method, path, body=body, headers=headers or {})
+        r = c.getresponse()
+        out = r.read()
+        c.close()
+        try:
+            return r.status, json.loads(out or b"{}")
+        except ValueError:
+            return r.status, out
+
+    def member(self, name="member9"):
+        self.ensure_admin()
+        status, _ = self.call("POST", "/api/users", {"username": name, "password": self.PW})
+        self.assertIn(status, (201, 400))
+        return self.sign_in(name)
+
+    def upload(self, owner, query, data, headers=None):
+        """PUT a file as a member (headers) or with the token."""
+        h = headers or {"Authorization": f"Bearer {TOKEN}"}
+        return self.send("PUT", f"/api/owners/{self.q(owner)}/attachments?{urllib.parse.urlencode(query)}", data,
+                         {**h, "Content-Type": "application/octet-stream"})
+
+    # 21. Pages on a sibling port or subdomain can't write with a session cookie
+    def test_sibling_pages_cannot_write(self):
+        self.ensure_admin()
+        h = self.sign_in()
+        body = json.dumps({"local_label": "changed"})
+        for extra in ({"Sec-Fetch-Site": "same-site", "Origin": "http://other.localhost:9"}, {"Origin": "https://evil.example"},
+                      {"Origin": f"http://127.0.0.1:{self.port + 1}"}):
+            self.assertEqual(self.send("POST", "/api/settings", body, {**h, **extra, "Content-Type": "application/json"})[0], 403, extra)
+        self.assertEqual(self.send("POST", "/api/settings", body, {**h, "Content-Type": "text/plain"})[0], 415)
+        same = {"Origin": f"http://127.0.0.1:{self.port}", "Sec-Fetch-Site": "same-origin", "Content-Type": "application/json"}
+        self.assertEqual(self.send("POST", "/api/settings", json.dumps({"local_label": ""}), {**h, **same})[0], 200)
+
+    def test_token_calls_keep_working_without_json(self):
+        """Scripts post with curl's default type; the token can't come from a web page, so that's fine."""
+        status, card = self.call("POST", "/api/ingest", {"source": "chatgpt", "id": "curl-1", "title": "from curl"})
+        self.assertEqual(status, 200)
+        status, _ = self.send("POST", "/api/ingest", json.dumps({"source": "chatgpt", "id": "curl-2"}),
+                              {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/x-www-form-urlencoded"})
+        self.assertEqual(status, 200)
+
+    # 22. A card can never take a library project's or task's key
+    def test_card_ids_cannot_shadow_a_project(self):
+        p = self.ok("POST", "/api/projects", {"name": "shadowed"})
+        doc = self.upload(f"project:{p['id']}", {"name": "design.md", "kind": "doc"}, b"# design")[1]
+        h = self.member()
+        status, card = self.send("POST", "/api/cards", json.dumps({"title": "t", "url": f"https://claude.ai/project/{p['id']}"}),
+                                 {**h, "Content-Type": "application/json"})
+        self.assertEqual(status, 201)
+        self.assertNotEqual(card["id"], f"project:{p['id']}")
+        self.assertEqual(self.send("DELETE", f"/api/cards/{self.q(card['id'])}", None, h)[0], 200)
+        self.ok("DELETE", f"/api/cards/{self.q(card['id'])}?purge=1")
+        self.ok("DELETE", f"/api/cards/{self.q('project:' + p['id'])}?purge=1")  # not a card: nothing to delete
+        self.assertEqual(self.call("GET", f"/api/blobs/{doc['sha']}", raw=True)[0], 200)
+        self.assertEqual(len(self.ok("GET", f"/api/projects/{p['id']}")["docs"]), 1)
+
+    def test_reserved_ingest_sources(self):
+        p = self.ok("POST", "/api/projects", {"name": "reserved"})
+        t = self.ok("POST", "/api/tasks", {"project_id": p["id"], "title": "t"})
+        for source, ext in (("project", p["id"]), ("task", t["id"])):
+            self.assertEqual(self.call("POST", "/api/ingest", {"source": source, "id": ext, "title": "x"})[0], 400)
+
+    def test_claude_project_import_keeps_its_docs(self):
+        uid = "11111111-2222-3333-4444-555555555555"
+        out = self.ok("POST", "/api/import", [{"uuid": uid, "name": "Imported", "docs": [{"filename": "a.md", "content": "x"}]}])
+        self.assertEqual(out["projects"], 1)
+        self.assertEqual([a["name"] for a in self.ok("GET", f"/api/cards/{self.q('project:' + uid)}/archive")["attachments"]], ["a.md"])
+        # A project in an export that doesn't have a UUID is skipped rather than given a key that could clash.
+        p = self.ok("POST", "/api/projects", {"name": "not-mine"})
+        self.assertEqual(self.ok("POST", "/api/import", [{"uuid": p["id"], "name": "clash"}])["projects"], 0)
+
+    # 23. Members can't delete earlier versions or transcripts with replace=1
+    def test_member_upload_cannot_replace_history(self):
+        cid = self.hook("keep-transcript", title="t")["id"]
+        q = {"kind": "transcript", "name": "t.jsonl.gz", "path": "claude-code-transcript", "replace": "1"}
+        first = self.upload(cid, q, gzip.compress(b"the real transcript"))[1]
+        h = self.member()
+        self.assertEqual(self.upload(cid, q, gzip.compress(b"x"), h)[0], 201)
+        self.assertEqual(self.call("GET", f"/api/blobs/{first['sha']}", raw=True)[0], 200)
+
+    # 24. Scrubbing stays fast, runs in pieces, and compressed uploads can't expand without limit
+    def test_scrubbing_stays_fast_on_awkward_text(self):
+        code = """
+import time
+from hub.redaction import redact
+for text in ("a." * 200_000, "sk-" + "a-" * 200_000, "x" * 400_000, "1.2" * 150_000):
+    t0 = time.time(); redact(text); print(round(time.time() - t0, 2))
+"""
+        run = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, timeout=120)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        for line in run.stdout.split():
+            self.assertLess(float(line), 3, run.stdout)
+
+    def test_long_text_is_scrubbed_in_pieces_without_missing_secrets(self):
+        code = """
+from hub import redaction
+redaction.CHUNK = 1000
+key = "-----BEGIN RSA PRIVATE KEY-----\\n" + "\\n".join(["MIIEowIBAAKCAQEAx2b3c4d5e6f7g8h9"] * 80) + "\\n-----END RSA PRIVATE KEY-----"
+text = ("filler line\\n" * 70) + key + "\\n" + ("more\\n" * 400) + "token: ghp_" + "A" * 36 + "\\n" + ("tail\\n" * 300)
+pieces = list(redaction.pieces(text))
+print(len(pieces) > 3, "".join(pieces) == text)
+out = redaction.redact(text)
+print("MIIEowIBAAKCAQEA" in out, "ghp_AAAA" in out, len(out) < len(text))
+"""
+        run = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, timeout=60)
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stdout.split("\n")[:2], ["True True", "False False True"])
+
+    def test_notes_with_slow_text_do_not_hold_up_others(self):
+        cid = self.hook("slow-notes", title="t")["id"]
+        h = self.member()
+        t0 = time.time()
+        status, _ = self.send("PATCH", f"/api/cards/{self.q(cid)}", json.dumps({"notes": "a." * 60000}), {**h, "Content-Type": "application/json"})
+        self.assertEqual(status, 200)
+        self.assertLess(time.time() - t0, 3)
+
+    def test_compressed_uploads_are_bounded(self):
+        cid = self.hook("gz-limit", title="t")["id"]
+        bomb = gzip.compress(b"\0" * (260 * 1024 * 1024), compresslevel=9)
+        t0 = time.time()
+        status, out = self.upload(cid, {"name": "big.txt.gz", "kind": "upload"}, bomb)
+        self.assertEqual(status, 400, out)
+        self.assertIn("expands", out["error"])
+        self.assertLess(time.time() - t0, 30)
+
+    # 26. A member's upload is never a handoff that new sessions or generation would treat as the project's record
+    def test_member_uploads_are_not_handoffs(self):
+        p = self.ok("POST", "/api/projects", {"name": "ctx-plant"})
+        h = self.member()
+        status, _ = self.upload(f"project:{p['id']}", {"kind": "handoff", "name": "HANDOFF.md", "path": "generated:handoff"}, b"planted", h)
+        self.assertEqual(status, 403)
+        status, _ = self.upload(f"project:{p['id']}", {"kind": "handoff", "name": "HANDOFF.md"}, b"# Handoff\n\nPLANTED", h)
+        self.assertEqual(status, 201)
+        docs = self.ok("GET", f"/api/projects/{p['id']}")["docs"]
+        self.assertEqual([d["kind"] for d in docs], ["upload"])
+        self.hook("ctx-plant-old", title="old", project="ctx-plant")
+        self.hook("ctx-plant-new", "SessionStart", project="ctx-plant", source="startup")
+        self.assertNotIn("PLANTED", self.ok("GET", f"/api/context/{self.q('code:ctx-plant-new')}")["text"])
+
+    # 27. Keys and tokens don't follow redirects to another address
+    def test_open_webui_key_does_not_follow_a_redirect(self):
+        seen = []
+
+        class Target(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                seen.append(self.headers.get("Authorization"))
+                self.send_response(200)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"[]")
+
+        target = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Target)
+
+        class Redirect(Target):
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", f"http://localhost:{target.server_port}{self.path}")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+        redirect = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Redirect)
+        for s in (target, redirect):
+            threading.Thread(target=s.serve_forever, daemon=True).start()
+        try:
+            self.ok("POST", "/api/settings", {"owui_url": f"http://127.0.0.1:{redirect.server_port}", "owui_key": "owui-key-0123456789"})
+            self.ok("POST", "/api/integrations/owui/sync", {})
+            time.sleep(2)
+            self.assertEqual(seen, [])
+        finally:
+            self.ok("POST", "/api/settings", {"owui_url": "", "owui_key": ""})
+            target.shutdown()
+            redirect.shutdown()
+
+    # 28. Odd headers and titles are handled
+    def test_odd_headers_get_an_answer(self):
+        s = socket.create_connection(("127.0.0.1", self.port))
+        s.settimeout(5)
+        s.sendall("GET /api/cards HTTP/1.1\r\nHost: x\r\nX-Hub-Proxy-Secret: sécret\r\n\r\n".encode("latin-1"))
+        self.assertTrue(s.recv(40).startswith(b"HTTP/1.1 401"))
+        s.close()
+        self.ensure_admin()
+        h = self.sign_in()
+        self.assertEqual(self.send("GET", "/api/cards", None, {**h, "Authorization": "Basic dXNlcjpwYXNz"})[0], 200)
+        self.assertEqual(self.send("GET", "/api/cards", None, {**h, "Authorization": "Bearer wrong"})[0], 401)
+
+    def test_ntfy_titles_stay_on_one_line(self):
+        code = f"""
+import http.server, threading
+from hub import db, notifications
+db.conn = db.connect()
+got = []
+class T(http.server.BaseHTTPRequestHandler):
+    def log_message(self, *a): pass
+    def do_POST(self):
+        self.rfile.read(int(self.headers["Content-Length"])); got.append(self.headers["Title"])
+        self.send_response(200); self.send_header("Content-Length", "0"); self.end_headers()
+srv = http.server.HTTPServer(("127.0.0.1", 0), T); threading.Thread(target=srv.serve_forever, daemon=True).start()
+db.set_setting("notify_url", f"http://127.0.0.1:{{srv.server_port}}/topic"); db.set_setting("notify_format", "ntfy")
+print(notifications.notify("Claude is waiting: line one\\nline two", "m", "https://hub/#card=x\\r\\ny"), got)
+"""
+        with tempfile.TemporaryDirectory() as d:
+            run = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, timeout=60,
+                                 env={**os.environ, "HUB_DB": f"{d}/hub.db"})
+        self.assertEqual(run.returncode, 0, run.stderr)
+        self.assertEqual(run.stdout.strip(), "True ['Claude is waiting: line one line two']")
+
+    # 29. Smaller hardening
+    def test_installer_and_page_keep_the_token_out_of_arguments(self):
+        install = (ROOT / "install.sh").read_text()
+        self.assertNotIn('-H "Authorization: Bearer', install)
+        self.assertNotIn('"${HUB_TOKEN:-}" <<', install)
+        self.assertIn("shlex.quote(hook)", install)
+        page = (ROOT / "web/js/settings.js").read_text()
+        self.assertNotIn('curl -fsS -H "Authorization: Bearer $HUB_TOKEN" ${hubUrl}/connect/install.sh', page)
+        workflow = (ROOT / ".github/workflows/image.yml").read_text()
+        self.assertEqual(re.findall(r"uses: [\w./-]+@v\d+\s*$", workflow, re.M), [])
+
+    def test_citations_are_added_to_text_only(self):
+        ask = (ROOT / "web/js/ask.js").read_text()
+        self.assertNotIn("md(res.answer).replace(", ask)
+        self.assertIn("createTreeWalker", ask)
+
+
+class HookRedirects(unittest.TestCase):
+    """Finding 27: the workstation hook doesn't send its token on to another address."""
+
+    def test_hook_does_not_follow_a_redirect(self):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("hook_redirects", ROOT / "hook.py")
+        h = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(h)
+        seen = []
+
+        class Target(http.server.BaseHTTPRequestHandler):
+            def log_message(self, *a):
+                pass
+
+            def do_GET(self):
+                seen.append(self.headers.get("Authorization"))
+                self.send_response(200)
+                self.send_header("Content-Length", "2")
+                self.end_headers()
+                self.wfile.write(b"{}")
+
+        target = http.server.HTTPServer(("127.0.0.1", 0), Target)
+
+        class Redirect(Target):
+            def do_GET(self):
+                self.send_response(302)
+                self.send_header("Location", f"http://localhost:{target.server_port}/x")
+                self.send_header("Content-Length", "0")
+                self.end_headers()
+
+        redirect = http.server.HTTPServer(("127.0.0.1", 0), Redirect)
+        for s in (target, redirect):
+            threading.Thread(target=s.serve_forever, daemon=True).start()
+        old = {k: os.environ.get(k) for k in ("HUB_URL", "HUB_TOKEN")}
+        os.environ.update(HUB_URL=f"http://127.0.0.1:{redirect.server_port}", HUB_TOKEN="hook-token")
+        try:
+            with self.assertRaises(urllib.error.HTTPError):
+                h.request("GET", "/api/cards")
+            self.assertEqual(seen, [])
+        finally:
+            for k, v in old.items():
+                os.environ.pop(k, None) if v is None else os.environ.__setitem__(k, v)
+            target.shutdown()
+            redirect.shutdown()
+
+
 class Lockout(unittest.TestCase):
     def test_flooding_does_not_reset_a_lock(self):
         code = """
@@ -1662,10 +2019,16 @@ for i in range(10001):
 try:
     accounts.login("alice", "correct horse battery"); print("open")
 except PermissionError as e: print(e)
+import time
+accounts.ADDR_STEP, accounts.ADDR_MAX_DELAY = 0.3, 1.0
+accounts.create_user("carol", "correct horse battery", "member")
 for i in range(30):
     try: accounts.login(f"bob{i}", "nope nope nope", "10.0.0.9")
     except PermissionError: pass
-try: accounts.login("carol", "anything at all", "10.0.0.9")
+t0 = time.time()
+try: accounts.login("dave", "anything at all", "10.0.0.9")
+except PermissionError as e: print(e, "slowed" if time.time() - t0 >= 0.25 else "not slowed")
+try: print("signed in", accounts.login("carol", "correct horse battery", "10.0.0.9")[0]["username"])
 except PermissionError as e: print(e)
 """
         with tempfile.TemporaryDirectory() as d:
@@ -1674,7 +2037,10 @@ except PermissionError as e: print(e)
             self.assertEqual(run.returncode, 0, run.stderr)
             lines = run.stdout.split("\n")
             self.assertIn("too many", lines[0])
-            self.assertIn("too many", lines[1])
+            # Many failures from one address slow its wrong passwords down, but a right password still works:
+            # people behind one proxy or router share an address, and a lock would shut them all out.
+            self.assertEqual(lines[1], "wrong username or password slowed")
+            self.assertEqual(lines[2], "signed in carol")
 
 
 if __name__ == "__main__":

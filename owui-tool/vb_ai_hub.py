@@ -13,6 +13,16 @@ import urllib.request
 from pydantic import BaseModel, Field
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Every call carries the hub token, so a redirect to another address is an error rather than a hand-over."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, f"the hub redirected to {newurl}; set hub_url to that address", headers, fp)
+
+
+OPENER = urllib.request.build_opener(NoRedirect)
+
+
 class Tools:
     class Valves(BaseModel):
         hub_url: str = Field(default="http://localhost:8787", description="VB AI Hub address")
@@ -30,7 +40,7 @@ class Tools:
             headers={"Authorization": f"Bearer {self.valves.hub_token}", "Content-Type": "application/json"},
         )
         try:
-            with urllib.request.urlopen(req, timeout=self.valves.timeout) as r:
+            with OPENER.open(req, timeout=self.valves.timeout) as r:
                 return json.loads(r.read() or b"{}")
         except urllib.error.HTTPError as e:
             try:

@@ -42,7 +42,7 @@ docker compose up -d
 
 Open `http://your-server:8787` and create the admin account. It asks for the token in `.env`, which also connects tools and hooks to the hub.
 
-That runs the published image, `ghcr.io/virtual-bytes/vb-ai-hub`. To build it yourself, clone the repository, change the `image:` line in `docker-compose.yml` to `build: .`, and run `docker compose up -d --build`. To update later, run `docker compose pull && docker compose up -d`.
+That runs the published image, `ghcr.io/virtual-bytes/vb-ai-hub`. To build it yourself, clone the repository, change the `image:` line in `docker-compose.yml` to `build: .`, and run `docker compose up -d --build`. To update later, run `docker compose pull && docker compose up -d`. To stay on one version until you choose to update, change `latest` in the `image:` line to a version such as `1.0.2`.
 
 Without Docker, you only need Python. It's tested on 3.13 and 3.14:
 
@@ -265,11 +265,13 @@ The rest of the API:
 
 Three ways in, and any one is enough:
 
-- **Accounts:** on a fresh hub the first visitor creates the admin account, which requires the access token (`HUB_TOKEN`) so nobody else can claim the install. Admins add people under Settings → Accounts and access, as admin or member. Members can read everything, add and edit cards, move them, trash and restore them, upload files, add and edit tasks and projects, and ask the library questions. Only admins can delete forever, rename or merge projects, delete tasks or files, change rules, run imports, syncs, generation and backups, and change settings or users. Passwords are PBKDF2-hashed, sessions last 30 days in an HttpOnly, SameSite=Strict cookie, an account locks for 5 minutes after 5 wrong passwords, and an address locks after 30 wrong passwords across any accounts.
+- **Accounts:** on a fresh hub the first visitor creates the admin account, which requires the access token (`HUB_TOKEN`) so nobody else can claim the install. Admins add people under Settings → Accounts and access, as admin or member. Members can read everything, add and edit cards, move them, trash and restore them, upload files, add and edit tasks and projects, and ask the library questions. Only admins can delete forever, rename or merge projects, delete tasks or files, change rules, run imports, syncs, generation and backups, and change settings or users. Passwords are PBKDF2-hashed, sessions last 30 days in an HttpOnly, SameSite=Strict cookie, and an account locks for 5 minutes after 5 wrong passwords. After 30 wrong passwords from one address, across any accounts, each further wrong password from it is answered more slowly. A right password still works, because people behind one proxy or router share an address.
 - **Access token:** `Authorization: Bearer <HUB_TOKEN>`, for hooks and tools. It acts as admin.
 - **Single sign-on:** a trusted proxy sends `X-Authentik-Username` with the shared `HUB_PROXY_SECRET`. It acts as admin.
 
-With no token and no accounts the hub is open, which is only meant for a local install.
+With no token and no accounts the hub is open, which is only meant for a local install. In that mode it only answers to loopback names, IP addresses, the machine's own name and the hub address in Settings, so a web page can't reach it through a domain name of its own. To use another name, list it in `HUB_ALLOWED_HOSTS` (comma separated).
+
+The hub refuses changes sent from other web pages, including pages on another port or subdomain of the same host. It checks the `Origin` and `Sec-Fetch-Site` headers that browsers send, and a change that relies on a signed-in cookie or on open mode has to be sent as JSON. Calls with the access token aren't affected, so scripts can keep posting with curl's defaults.
 
 ## Project context
 

@@ -1,14 +1,13 @@
 """Outgoing notifications."""
 
 import json
-import ssl
 import urllib.request
 from datetime import datetime
 from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from . import db
-from .util import clip, now
+from .util import clip, fetch, now
 from .db import db_lock, int_setting, set_setting, setting
 from .live import status_json
 from .usage import budget_state
@@ -18,15 +17,16 @@ def notify(title, message, link):
     url, fmt = setting("notify_url"), setting("notify_format", "ha")
     if not url:
         return False
+    title, link = " ".join(str(title).split()), " ".join(str(link or "").split())  # a line break can't go in a header
     if fmt == "ntfy":
         headers = {"Title": title.encode("ascii", "replace").decode(), "Tags": "robot"}
         if link:
-            headers["Click"] = link
+            headers["Click"] = link.encode("ascii", "replace").decode()
         req = urllib.request.Request(url, data=message.encode(), headers=headers, method="POST")
     else:
         req = urllib.request.Request(url, data=json.dumps({"title": title, "message": message, "url": link}).encode(),
                                      headers={"Content-Type": "application/json"}, method="POST")
-    with urllib.request.urlopen(req, timeout=10, context=ssl.create_default_context()) as r:
+    with fetch(req, 10) as r:
         return 200 <= r.status < 300
 
 

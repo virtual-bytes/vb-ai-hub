@@ -11,7 +11,6 @@ Archived files live in a content-addressed store next to the database (<db dir>/
 import os
 import sys
 import threading
-from http.server import ThreadingHTTPServer
 
 from hub import db
 from hub.backup import restore
@@ -20,7 +19,7 @@ from hub.litellm import litellm_loop
 from hub.maintenance import maintenance_loop
 from hub.owui import owui_loop
 from hub.retrieval import embed_loop
-from hub.web import Handler
+from hub.web import Handler, HubServer
 
 
 def main():
@@ -33,8 +32,7 @@ def main():
     threading.Thread(target=litellm_loop, daemon=True, name="litellm-sync").start()
     threading.Thread(target=maintenance_loop, daemon=True, name="maintenance").start()
     threading.Thread(target=embed_loop, daemon=True, name="embed").start()
-    srv = ThreadingHTTPServer((HOST, PORT), Handler)
-    srv.daemon_threads = True
+    srv = HubServer((HOST, PORT), Handler)
     auth = "token required" if TOKEN else "no token (set HUB_TOKEN before exposing beyond localhost)"
     print(f"VB AI Hub on http://{HOST}:{PORT}  db={DB_PATH}  backups={BACKUP_DIR or 'off'}  {auth}", flush=True)
     try:

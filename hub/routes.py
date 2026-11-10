@@ -10,7 +10,7 @@ from zoneinfo import ZoneInfo
 
 from . import db
 from .config import COLUMNS, DEFAULT_SETTINGS, HERE, RULE_FIELDS
-from .util import attachment_header, clean_mime, is_text, now, safe_name, safe_url
+from .util import UUID, attachment_header, clean_mime, is_text, now, safe_name, safe_url
 from .redaction import redact
 from .db import db_lock, public_settings, set_setting, setting
 from .live import broadcast, status_json
@@ -19,6 +19,7 @@ from .projects import (
     create_task,
     update_task,
     index_project,
+    library_owner,
     check_rule_pattern,
     load_rules,
     merge_projects,
@@ -252,8 +253,15 @@ class ApiRoutes:
         kind = q.get("kind") or "upload"
         if kind not in ("upload", "doc", "handoff", "digest", "transcript", "plan", "memory"):
             kind = "upload"
-        res = add_attachment(owner, kind, name, q.get("path") or name, self.body(),
-                             q.get("mime") or "", replace=q.get("replace") == "1", at=float(q["at"]) if q.get("at") else None)
+        path, replace = q.get("path") or name, q.get("replace") == "1"
+        if not self.is_admin():
+            # Members add files. They can't replace earlier versions (that deletes them), and what they add is an
+            # upload, never a handoff, digest or transcript that sessions and generation treat as the project's record.
+            if path.startswith("generated:"):
+                raise PermissionError("only the hub writes generated documents")
+            kind, replace = "upload", False
+        res = add_attachment(owner, kind, name, path, self.body(), q.get("mime") or "", replace=replace,
+                             at=float(q["at"]) if q.get("at") else None)
         return self.send_json(res, 201 if res["added"] else 200)
 
     def get_blob(self, sha):
@@ -280,7 +288,7 @@ class ApiRoutes:
                 db.conn.execute("DELETE FROM search WHERE card_id=? AND kind='doc' AND ref=?", (row["card_id"], row["path"]))
             db.conn.commit()
             gc_blobs([row["sha"]])
-        if row["card_id"].startswith(("task:", "project:")):
+        if library_owner(row["card_id"]):
             broadcast("library", {"owner": row["card_id"]})
         else:
             push_card(row["card_id"])
@@ -473,10 +481,13 @@ class ApiRoutes:
             source = "owui"
         else:
             source = LINK_HOSTS.get((urlparse(url).hostname or "").removeprefix("www."), "manual")
-        if source in LINK_HOSTS.values():  # the same link again updates its card
+        last = url.rstrip("/").rsplit("/", 1)[-1]
+        if source in LINK_HOSTS.values() or (source in ("chat", "project") and not UUID.fullmatch(last)):
+            # The same link again updates its card. claude.ai ids are UUIDs; anything else is hashed, so a link can
+            # never produce the key a library project or task uses (project:<id>, task:<id>).
             cid = f"{source}:{hashlib.sha256(url.rstrip('/').encode()).hexdigest()[:16]}"
         else:
-            cid = f"{source}:{url.rstrip('/').rsplit('/', 1)[-1]}" if source != "manual" else f"manual:{secrets.token_hex(6)}"
+            cid = f"{source}:{last}" if source != "manual" else f"manual:{secrets.token_hex(6)}"
         col = body.get("column") if body.get("column") in COLUMNS else "ideas"
         card = upsert(cid, source, {"title": (body.get("title") or "").strip() or "Untitled", "url": url or None,
                                     "notes": body.get("notes") or None}, col, "created")

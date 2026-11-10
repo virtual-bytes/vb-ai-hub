@@ -3,13 +3,13 @@
 Only counts are kept. /spend/logs/v2 leaves out prompts and responses, and the hub reads no other endpoint."""
 
 import json
-import ssl
 import threading
 import urllib.parse
 import urllib.request
 from datetime import datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
+from .util import fetch
 from .db import int_setting, set_setting, setting
 from .live import status_json
 from .usage import set_gpu_usage
@@ -27,7 +27,7 @@ def litellm_page(start, end, page):
                                     "sort_by": "startTime", "sort_order": "asc"})
     req = urllib.request.Request(f"{setting('litellm_url')}/spend/logs/v2?{query}",
                                  headers={"Authorization": f"Bearer {setting('litellm_key')}", "Accept": "application/json"})
-    with urllib.request.urlopen(req, timeout=30, context=ssl.create_default_context()) as r:
+    with fetch(req, 30) as r:
         return json.loads(r.read()).get("data") or []
 
 

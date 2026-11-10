@@ -1,6 +1,7 @@
 """Removes secrets from anything before it is stored."""
 
 import gzip
+import io
 import re
 
 from . import db
@@ -34,7 +35,7 @@ SECRET_PATTERNS = [
     ("basic-auth", re.compile(r"(?i)(\bbasic[ \t]+)(?!\[REDACTED)([A-Za-z0-9+/]{12,}={0,2})(?![A-Za-z0-9+/=])")),
     ("jwt", re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}")),
     ("bearer", re.compile(r"(?i)(\bbearer[ \t]+)(?!\[REDACTED)([A-Za-z0-9._~+/=-]{16,})")),
-    ("url-credentials", re.compile(r"(\b[a-z][a-z0-9+.-]*://[^/\s:@\"']+:)(?!\[REDACTED)([^@\s\"'#?]{3,}?)(@)(?=[^@\s]*(?:[/\s\"']|$))")),
+    ("url-credentials", re.compile(r"(\b[a-z][a-z0-9+.-]{0,30}://[^/\s:@\"']+:)(?!\[REDACTED)([^@\s\"'#?]{3,}?)(@)(?=[^@\s]*(?:[/\s\"']|$))")),
     # key=value / key: value on the same line. Skips placeholders ($VAR, <x>, `code`, {x}), values on the next
     # line, and plain lowercase words ("hashed", "command", "certbot").
     ("assignment", re.compile(
@@ -48,10 +49,40 @@ def known_secrets():
     return [v for v in vals if v and len(v) >= 12]
 
 
+CHUNK = 1024 * 1024  # long text is scrubbed in pieces, so other requests keep being answered meanwhile
+MAX_EXPANDED = 256 * 1024 * 1024  # a compressed upload may expand to this much text, no more
+
+
+def pieces(text, size=None):
+    """Long text in pieces of about `size` (CHUNK by default), cut at line ends and never inside a private key block."""
+    size, start, n = size or CHUNK, 0, len(text)
+    while start < n:
+        end = text.find("\n", start + size)
+        end = n if end < 0 else end + 1
+        begin = text.rfind("-----BEGIN ", start, end)
+        if begin >= 0 and "PRIVATE KEY" in text[begin:begin + 80] and text.find("-----END ", begin, end) < 0:
+            close = text.find("-----END ", end, end + 65536)
+            stop = text.find("\n", close if close >= 0 else end + 65536)
+            end = n if stop < 0 else stop + 1
+        yield text[start:end]
+        start = end
+
+
 def redact(text: str) -> str:
     """Scrub credentials before anything is stored. Keeps the surrounding text so logs stay readable."""
     if not text:
         return text
+    if len(text) > CHUNK:
+        return "".join(redact_piece(p) for p in pieces(text))
+    return redact_piece(text)
+
+
+def redact_clip(text, n: int) -> str:
+    """Scrub a field that's stored at most n characters long, without scrubbing what would be cut anyway."""
+    return redact(str(text or "")[:n + 200])[:n]
+
+
+def redact_piece(text: str) -> str:
     for v in known_secrets():
         text = text.replace(v, "[REDACTED:hub-secret]")
     for name, rx in SECRET_PATTERNS:
@@ -66,9 +97,12 @@ def redact_bytes(data: bytes, mime: str, name: str) -> bytes:
     """Redact text documents and gzip-compressed transcripts; other binaries pass through."""
     if name.endswith(".gz") or mime == "application/gzip":
         try:
-            raw = gzip.decompress(data)
-        except OSError:
+            with gzip.GzipFile(fileobj=io.BytesIO(data)) as g:
+                raw = g.read(MAX_EXPANDED + 1)
+        except (OSError, EOFError):
             return data
+        if len(raw) > MAX_EXPANDED:
+            raise ValueError(f"{name} expands to more than {MAX_EXPANDED // 1024 // 1024} MB, so the hub can't check it for secrets")
         clean = redact(raw.decode("utf-8", "surrogateescape")).encode("utf-8", "surrogateescape")
         return data if clean == raw else gzip.compress(clean, compresslevel=6)
     if is_text(mime, name):

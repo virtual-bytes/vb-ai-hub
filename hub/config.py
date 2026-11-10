@@ -1,5 +1,6 @@
 """Settings from the environment and fixed constants."""
 
+import ipaddress
 import os
 from pathlib import Path
 
@@ -17,11 +18,29 @@ TOKEN = env("TOKEN")
 # the proxy sends the signed-in user in X-Authentik-Username together with this
 # shared secret. Requests without both still need the token (hooks, tools).
 PROXY_SECRET = env("PROXY_SECRET")
+# Extra host names the hub answers to in open mode (no token, no accounts), comma separated. Loopback names,
+# IP addresses, the machine's own name and the hub address in Settings always work.
+ALLOWED_HOSTS = {h.strip().lower().rstrip(".") for h in env("ALLOWED_HOSTS").split(",") if h.strip()}
+# Reverse proxies whose X-Forwarded-For is believed, as addresses or ranges (10.0.0.0/8), comma separated.
+# A proxy that sends HUB_PROXY_SECRET is believed too.
+def _networks(text):
+    out = []
+    for item in (x.strip() for x in text.split(",")):
+        try:
+            if item:
+                out.append(ipaddress.ip_network(item, strict=False))
+        except ValueError:
+            print(f"HUB_TRUSTED_PROXIES: {item!r} isn't an address or range, so it's ignored", flush=True)
+    return out
+
+
+TRUSTED_PROXIES = _networks(env("TRUSTED_PROXIES"))
 BLOB_DIR = Path(DB_PATH).resolve().parent / "blobs"
 BACKUP_DIR = Path(env("BACKUP_DIR", "")) if env("BACKUP_DIR") else None
 MAX_BODY = 200 * 1024 * 1024  # file uploads and claude.ai exports
 MAX_JSON = 16 * 1024 * 1024  # everything else
 MAX_STREAMS, MAX_STREAMS_PER_CLIENT = 200, 20
+MAX_CONNECTIONS = int(env("MAX_CONNECTIONS", "512"))  # open connections at once, live streams included
 FTS_DOC_LIMIT = 512 * 1024
 COLUMNS = ["ideas", "active", "needs_me", "done"]
 EDITABLE = {"title", "project", "notes", "url", "column"}

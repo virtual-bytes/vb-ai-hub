@@ -1,7 +1,10 @@
 """Small helpers with no state: time, names, text and file types."""
 
 import re
+import ssl
 import time
+import urllib.error
+import urllib.request
 from datetime import datetime, timezone
 from urllib.parse import quote, urlparse
 
@@ -34,6 +37,7 @@ def iso(ts):
         return ""
 
 
+UUID = re.compile(r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}")
 MIME = re.compile(r"[a-z0-9!#$&^_.+-]{1,64}/[a-z0-9!#$&^_.+-]{1,96}")
 
 
@@ -79,6 +83,22 @@ def parse_ts(s) -> float | None:
         return datetime.fromisoformat(str(s).replace("Z", "+00:00")).timestamp()
     except ValueError:
         return None
+
+
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Calls to Open WebUI, LiteLLM and webhooks carry a key. Following a redirect would hand that key to whatever
+    address the redirect names, so a redirect is an error that says where it pointed."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, f"the server redirected to {newurl}; use that address instead", headers, fp)
+
+
+OPENER = urllib.request.build_opener(NoRedirect, urllib.request.HTTPSHandler(context=ssl.create_default_context()))
+
+
+def fetch(req, timeout):
+    """urlopen without following redirects."""
+    return OPENER.open(req, timeout=timeout)
 
 
 def clip(s, n):

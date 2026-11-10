@@ -173,7 +173,27 @@ def index_task(tid):
                         (f"task:{tid}", tid, t["title"], t["notes"]))
 
 
+def is_card(owner: str) -> bool:
+    return bool(db.conn.execute("SELECT 1 FROM cards WHERE id=?", (owner,)).fetchone())
+
+
+def library_owner(owner: str) -> bool:
+    """True for a project's or task's own key. Cards for claude.ai projects also start with project:, so a card wins."""
+    return owner.startswith(("project:", "task:")) and not is_card(owner)
+
+
+def library_key_taken(owner: str) -> bool:
+    """True when a library project or task already uses this key, so a card must not take it."""
+    if owner.startswith("project:"):
+        return bool(project_by_id(owner[8:]))
+    if owner.startswith("task:"):
+        return bool(db.conn.execute("SELECT 1 FROM tasks WHERE id=?", (owner[5:],)).fetchone())
+    return False
+
+
 def owner_exists(owner: str) -> bool:
+    if is_card(owner):
+        return True
     if owner.startswith("project:"):
         return bool(project_by_id(owner[8:]))
     if owner.startswith("task:"):
@@ -183,6 +203,9 @@ def owner_exists(owner: str) -> bool:
 
 def owner_meta(owner: str) -> dict:
     """Title/project/source for anything that can own library content."""
+    if not library_owner(owner):
+        c = db.conn.execute("SELECT title, project, source, last_activity FROM cards WHERE id=? AND deleted_at IS NULL", (owner,)).fetchone()
+        return dict(c) if c else {"title": "", "project": "", "source": "", "last_activity": None}
     if owner.startswith("project:"):
         p = project_by_id(owner[8:]) or {}
         return {"title": p.get("name", ""), "project": p.get("name", ""), "source": "project-doc", "last_activity": p.get("updated_at")}

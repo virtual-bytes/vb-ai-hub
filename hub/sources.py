@@ -6,7 +6,7 @@ import re
 
 from . import db
 from .config import COLUMNS
-from .util import guess_mime, now, parse_ts
+from .util import UUID, guess_mime, now, parse_ts
 from .db import db_lock, setting
 from .records import get_card, push_card
 from .archive import add_attachment, add_worklog
@@ -57,6 +57,8 @@ def handle_ingest(ev: dict) -> dict:
     ext = str(ev.get("id") or "").strip()[:200]
     if not source or not ext:
         raise ValueError("source and id required")
+    if source in ("project", "task"):
+        raise ValueError(f"{source} is a reserved source name; use another")
     card_id = f"{source}:{ext}"
     existing = get_card(card_id)
     fields = {k: ev.get(k) or None for k in ("title", "project", "url", "status", "model", "notes", "last_prompt", "summary")}
@@ -85,6 +87,8 @@ def import_export(payload, prune=False) -> dict:
     for it in items:
         if not isinstance(it, dict) or not it.get("uuid"):
             continue
+        if "chat_messages" not in it and not UUID.fullmatch(str(it["uuid"])):
+            continue  # a claude.ai project's card is project:<uuid>; any other id could clash with a library project's key
         updated = parse_ts(it.get("updated_at")) or parse_ts(it.get("created_at")) or now()
         created = parse_ts(it.get("created_at")) or updated
         col = "done" if updated < cutoff else "active"

@@ -3,14 +3,13 @@
 import gzip
 import json
 import re
-import ssl
 import threading
 import urllib.error
 import urllib.request
 from urllib.parse import quote
 
 from . import db
-from .util import now, parse_ts
+from .util import fetch, now, parse_ts
 from .db import db_lock, int_setting, set_setting, setting
 from .live import status_json
 from .records import log_event, push_card
@@ -29,7 +28,7 @@ def owui_request(path, body=None, timeout=20):
     data = json.dumps(body).encode() if body is not None else None
     req = urllib.request.Request(base.rstrip("/") + path, data=data, method="POST" if data else "GET",
                                  headers={"Authorization": f"Bearer {key}", "Accept": "application/json", "Content-Type": "application/json"})
-    with urllib.request.urlopen(req, timeout=timeout, context=ssl.create_default_context()) as r:
+    with fetch(req, timeout) as r:
         return json.loads(r.read())
 
 

@@ -14,7 +14,11 @@ SESSION_DAYS = 30
 PBKDF2_ROUNDS = 600_000
 MIN_PASSWORD = 10
 LOCK_AFTER, LOCK_SECONDS = 5, 300
-ADDR_LOCK_AFTER = 30  # failures from one address, across any usernames, within LOCK_SECONDS
+# Failures from one address, across any usernames. Past this many, each further wrong password from that address
+# waits longer (ADDR_STEP more seconds each time, up to ADDR_MAX_DELAY). It never refuses a right password: many
+# people can share one address behind a proxy or an office router, and a lock would let anyone shut them all out.
+ADDR_LOCK_AFTER = 30
+ADDR_STEP, ADDR_MAX_DELAY = 0.5, 5.0
 MAX_TRACKED = 10000
 FAIL_DELAY = 0.2  # seconds added to every wrong password
 login_failures: dict[str, list] = {}  # username -> [count, locked_until, last_failure]
@@ -115,16 +119,20 @@ def note_failure(table, key, limit):
 def login(username, password, addr=""):
     global DUMMY_HASH
     key = str(username or "").strip().lower()[:64]
-    if locked(login_failures, key) or (addr and locked(addr_failures, addr)):
+    if locked(login_failures, key):
         raise PermissionError("too many attempts; try again in a few minutes")
     row = db.conn.execute("SELECT * FROM users WHERE username=?", (key,)).fetchone()
     DUMMY_HASH = DUMMY_HASH or hash_password(secrets.token_hex(8))
     good = check_password(str(password or "")[:1024], row["pw"] if row else DUMMY_HASH) and row is not None
     if not good:
         note_failure(login_failures, key, LOCK_AFTER)
+        delay = FAIL_DELAY
         if addr:
             note_failure(addr_failures, addr, ADDR_LOCK_AFTER)
-        time.sleep(FAIL_DELAY)
+            over = addr_failures[addr][0] - ADDR_LOCK_AFTER
+            if over >= 0:
+                delay = min(ADDR_MAX_DELAY, FAIL_DELAY + ADDR_STEP * (over + 1))
+        time.sleep(delay)
         raise PermissionError("wrong username or password")
     login_failures.pop(key, None)
     with db_lock:

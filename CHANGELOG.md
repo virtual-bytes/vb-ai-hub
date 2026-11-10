@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+More security fixes. After 1.0.1 I had the fixed code reviewed a second time, and this fixes what that review found.
+
+### Fixed
+
+- **Open mode and other web pages.** With no token and no accounts, a web page could reach the hub through a domain name it controls, or through a plain-text request the browser sends without asking. One such request could point the Open WebUI address at another server, which then received the library's text, or create the admin account. In open mode the hub now only answers to its own names (add others with `HUB_ALLOWED_HOSTS`), changes from other pages are refused, and changes that rely on open mode or a signed-in cookie must be JSON.
+- **Pages on a sibling address.** A page on another port or subdomain of the same host could make changes with a signed-in user's cookie. The hub now compares the `Origin` header with its own address, and refuses any `Sec-Fetch-Site` other than the same origin.
+- **Project documents.** A card added from a crafted claude.ai link could share a project's key, and emptying the trash then removed the project's documents. Card ids can no longer match a project's or task's key, a project's documents are kept even if an older card shares the key, and claude.ai project imports keep their documents again.
+- **Members and file history.** Members could delete earlier versions of a file, including a session's transcript, by uploading with `replace=1`, and could upload a file that new Claude Code sessions were then given as the project's handoff. Member uploads now always add a new version and are always uploads.
+- **Slow secret scrubbing.** Long runs of dotted or hyphenated text took seconds per hundred kilobytes to scrub and held up every other request meanwhile, and a small compressed upload could expand to gigabytes in memory. Scrubbing is now linear, long text is scrubbed in pieces outside the database lock, fields are cut to their size first, and compressed uploads may expand to 256 MB.
+- **Sign-in behind a proxy.** After 30 wrong passwords from one address, sign-in was refused for everyone at that address, even with the right password. Behind a proxy that's everyone. Now that address's wrong passwords are just answered more slowly. Set `HUB_TRUSTED_PROXIES` so the hub sees visitors' own addresses behind a proxy.
+- **Redirects.** Calls to Open WebUI, LiteLLM, webhooks and, from the hook and the Open WebUI tool, to the hub itself followed redirects with their key. A redirect is now an error that names the new address.
+- **Smaller fixes.** A non-ASCII proxy header no longer drops the connection. A line break in a card title no longer stops ntfy notifications. An `Authorization` header with another scheme, such as Basic auth added by a proxy, no longer blocks cookie sign-in. The hub accepts at most 512 connections at once (`HUB_MAX_CONNECTIONS`). The installer and the command on the Connect tools page keep the token out of process lists, and the hook's path is quoted for the shell. The image workflow pins its actions to exact commits. The `Server` header no longer shows the Python version. Citation numbers in answers are only linked in the answer's text.
+
+The test suite has tests for each of these.
+
 ## 1.0.1
 
 This release is all security fixes. Before more people installed the hub, I had its code reviewed for security, and this release fixes everything the review found. If you run 1.0.0, please update.

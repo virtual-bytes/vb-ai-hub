@@ -32,18 +32,35 @@ async function runAsk() {
   catch (e) { $("#askOut").innerHTML = `<div class="notice">${esc(e.message)}</div>`; }
   finally { const b = $("#askGo"); if (b) b.disabled = false; }
 }
-function srcAttrs(s) {
-  if (s.kind === "doc") return `data-act="doc" data-owner="${esc(s.owner)}" data-path="${esc(s.ref)}"`;
-  if (s.owner.startsWith("task:")) return `data-act="task" data-task="${esc(s.owner.slice(5))}"`;
-  if (s.owner.startsWith("project:")) return `data-proj="${esc(s.owner.slice(8))}"`;
-  return `data-card="${esc(s.owner)}"`;
+function srcData(s) {
+  if (s.kind === "doc") return { act: "doc", owner: s.owner, path: s.ref };
+  if (s.kind === "task") return { act: "task", task: s.owner.slice(5) };
+  if (s.kind === "project") return { proj: s.owner.slice(8) };
+  return { card: s.owner };
+}
+const srcAttrs = s => Object.entries(srcData(s)).map(([k, v]) => `data-${k}="${esc(v)}"`).join(" ");
+// Citation marks like [2] become links only in the answer's text: never inside code, a link or an attribute.
+function citeLinks(el, sources) {
+  const walk = document.createTreeWalker(el, NodeFilter.SHOW_TEXT, { acceptNode: n => n.parentElement.closest("code, pre, a") ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT });
+  const nodes = []; while (walk.nextNode()) nodes.push(walk.currentNode);
+  for (const node of nodes) {
+    const parts = node.nodeValue.split(/(\[\d{1,2}\])/); if (parts.length < 2) continue;
+    const frag = document.createDocumentFragment();
+    for (const part of parts) {
+      const m = part.match(/^\[(\d{1,2})\]$/), s = m && sources[m[1] - 1];
+      if (!s) { frag.append(part); continue; }
+      const a = Object.assign(document.createElement("a"), { className: "cite", href: "#", textContent: m[1] });
+      Object.assign(a.dataset, srcData(s)); frag.append(a);
+    }
+    node.replaceWith(frag);
+  }
 }
 function showAnswer(res) {
   const out = $("#askOut"); if (!out) return;
-  let html = md(res.answer).replace(/\[(\d{1,2})\]/g, (m, n) => res.sources[n - 1] ? `<a class="cite" ${srcAttrs(res.sources[n - 1])} href="#">${n}</a>` : m);
-  out.innerHTML = `<div class="answer"><div class="md">${html}</div></div>
+  out.innerHTML = `<div class="answer"><div class="md">${md(res.answer)}</div></div>
     <h3>Sources ${res.semantic ? "" : `<span class="arch">keyword match only</span>`}</h3>
     ${res.sources.map((s, i) => `<div class="src" ${srcAttrs(s)}><span class="n">${i + 1}</span><div><div class="meta"><span class="tag plain">${{ log: "Work log", doc: "Document", card: "Item", project: "Project", task: "Task" }[s.kind]}</span>${s.project ? `<span class="tag proj">${esc(s.project)}</span>` : ""}<span class="when">${ago(s.at)}</span></div>
       <div style="font-weight:500;margin-top:4px">${esc(s.kind === "doc" ? s.ref.split("/").pop() + ": " + s.title : s.title)}</div><div class="s">${esc(s.snippet)}</div></div></div>`).join("")}`;
+  citeLinks($(".answer .md", out), res.sources);
   $$("[data-proj]", out).forEach(h => h.onclick = e => { e.preventDefault(); state.libProjectId = h.dataset.proj; setLibMode("project"); });
 }

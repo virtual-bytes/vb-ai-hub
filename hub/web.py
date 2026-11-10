@@ -1,19 +1,22 @@
 """The HTTP handler: responses, authentication and dispatch."""
 
 import hashlib
+import ipaddress
 import json
 import queue
 import re
 import secrets
 import shutil
+import socket
+import threading
 import traceback
-from http.server import BaseHTTPRequestHandler
-from urllib.parse import parse_qs, unquote, urlparse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from urllib.parse import parse_qs, unquote, urlparse, urlsplit
 
 from . import db
-from .config import (ADMIN_ONLY, HERE, MAX_BODY, MAX_JSON, MAX_STREAMS, MAX_STREAMS_PER_CLIENT, MEMBER_WRITES,
-                     PROXY_SECRET, SESSION_COOKIE, TOKEN, env)
-from .db import db_lock
+from .config import (ADMIN_ONLY, ALLOWED_HOSTS, HERE, HOST, MAX_BODY, MAX_CONNECTIONS, MAX_JSON, MAX_STREAMS, MAX_STREAMS_PER_CLIENT,
+                     MEMBER_WRITES, PROXY_SECRET, SESSION_COOKIE, TOKEN, TRUSTED_PROXIES, env)
+from .db import db_lock, setting
 from .live import sub_lock, subscribers
 from .maintenance import health
 from .accounts import SESSION_DAYS, create_user, login, session_row, user_count
@@ -46,8 +49,80 @@ def member_may(method, path) -> bool:
     return method == "GET" or any(m == method and rx.fullmatch(path) for m, rx in MEMBER_RULES)
 
 
+def same_text(a, b) -> bool:
+    """Compare a header with a secret in constant time, whatever characters the header holds."""
+    return secrets.compare_digest(str(a).encode("utf-8", "surrogateescape"), str(b).encode("utf-8", "surrogateescape"))
+
+
+def split_host(value):
+    """(host name, port or None) from a Host header or an origin, or ("", None) when it can't be read."""
+    try:
+        u = urlsplit(value if "://" in value else "//" + value)
+        return (u.hostname or "").rstrip(".").lower(), u.port
+    except ValueError:
+        return "", None
+
+
+def default_port(scheme):
+    return {"http": 80, "https": 443}.get(scheme)
+
+
+def is_ip(host) -> bool:
+    try:
+        ipaddress.ip_address(host)
+        return True
+    except ValueError:
+        return False
+
+
+def known_host(host) -> bool:
+    """A name this hub answers to. Addresses always qualify; a page can only be served from an address the hub
+    really has. Other names need to be the hub's own, the one in Settings, or listed in HUB_ALLOWED_HOSTS."""
+    if not host or host == "localhost" or host.endswith(".localhost") or is_ip(host):
+        return True
+    own = socket.gethostname().lower()
+    names = {own, own + ".local", HOST.lower(), *ALLOWED_HOSTS}
+    public = split_host(setting("public_url"))[0]
+    return host in names or (bool(public) and host == public)
+
+
+def trusted_proxy(addr) -> bool:
+    try:
+        ip = ipaddress.ip_address(addr)
+    except ValueError:
+        return False
+    return any(ip in net for net in TRUSTED_PROXIES)
+
+
+class HubServer(ThreadingHTTPServer):
+    """One thread per connection, up to MAX_CONNECTIONS at once. Past that, new connections are closed straight away,
+    so a client that opens thousands of idle connections can't use up the machine's threads."""
+    daemon_threads = True
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.slots = threading.BoundedSemaphore(MAX_CONNECTIONS)
+
+    def process_request(self, request, client_address):
+        if not self.slots.acquire(blocking=False):
+            self.shutdown_request(request)
+            return
+        try:
+            super().process_request(request, client_address)
+        except Exception:
+            self.slots.release()
+            raise
+
+    def process_request_thread(self, request, client_address):
+        try:
+            super().process_request_thread(request, client_address)
+        finally:
+            self.slots.release()
+
+
 class Handler(ApiRoutes, BaseHTTPRequestHandler):
-    server_version = "VBAIHub/3.0"
+    server_version = "VBAIHub"
+    sys_version = ""
     protocol_version = "HTTP/1.1"
     timeout = 120  # a silent or very slow connection gives its thread back
 
@@ -103,16 +178,17 @@ class Handler(ApiRoutes, BaseHTTPRequestHandler):
         """The Authentik user the proxy vouches for, or ''."""
         if not PROXY_SECRET:
             return ""
-        if not secrets.compare_digest(self.headers.get("X-Hub-Proxy-Secret", ""), PROXY_SECRET):
+        if not same_text(self.headers.get("X-Hub-Proxy-Secret", ""), PROXY_SECRET):
             return ""
         return self.headers.get("X-Authentik-Username", "").strip()
 
     def supplied_token(self):
         """The token the caller sent, or None when it sent none. The address form is for the live stream only,
-        because EventSource can't set headers."""
+        because EventSource can't set headers. Other Authorization schemes, such as Basic auth added by a
+        proxy, aren't a token attempt, so they don't stop a session cookie from working."""
         h = self.headers.get("Authorization", "")
-        if h:
-            return h[7:] if h.startswith("Bearer ") else h
+        if h[:7].lower() == "bearer ":
+            return h[7:].strip()
         qs = parse_qs(urlparse(self.path).query)
         if "token" in qs:
             return qs["token"][0] if self.route == "/api/stream" else ""
@@ -120,7 +196,7 @@ class Handler(ApiRoutes, BaseHTTPRequestHandler):
 
     def token_ok(self) -> bool:
         supplied = self.supplied_token()
-        return bool(TOKEN) and supplied is not None and secrets.compare_digest(supplied.encode(), TOKEN.encode())
+        return bool(TOKEN) and supplied is not None and same_text(supplied, TOKEN)
 
     def bad_token(self) -> bool:
         """A request that announced itself as a token call, with the wrong token. It never falls back to a cookie,
@@ -128,11 +204,59 @@ class Handler(ApiRoutes, BaseHTTPRequestHandler):
         return self.supplied_token() is not None and not self.token_ok()
 
     def client_addr(self) -> str:
-        if PROXY_SECRET and secrets.compare_digest(self.headers.get("X-Hub-Proxy-Secret", ""), PROXY_SECRET):
-            fwd = self.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-            if fwd:
-                return fwd[:64]
-        return self.client_address[0] if self.client_address else ""
+        """The address the request came from. Behind a proxy this is the address the proxy saw: the last entry of
+        X-Forwarded-For that isn't a trusted proxy, because a client can put anything at the front of that header.
+        A proxy is trusted when it sends HUB_PROXY_SECRET or its address is in HUB_TRUSTED_PROXIES."""
+        peer = self.client_address[0] if self.client_address else ""
+        vouched = PROXY_SECRET and same_text(self.headers.get("X-Hub-Proxy-Secret", ""), PROXY_SECRET)
+        if not (vouched or trusted_proxy(peer)):
+            return peer
+        hops = [h.strip() for h in self.headers.get("X-Forwarded-For", "").split(",") if h.strip()]
+        while hops and trusted_proxy(hops[-1]) and len(hops) > 1:
+            hops.pop()
+        return hops[-1][:64] if hops else peer
+
+    def host_ok(self) -> bool:
+        """With no token and no accounts the hub trusts every request, so it only answers to its own names. That stops
+        a web page from re-pointing its own domain at the hub (DNS rebinding) and then reading and changing it."""
+        if TOKEN or user_count():
+            return True
+        return known_host(split_host(self.headers.get("Host", ""))[0])
+
+    def same_origin(self) -> bool:
+        """For writes: refuse requests a browser marks as coming from another page. Tools and scripts send neither
+        header, so they're unaffected. Origins are compared by name and port, because sibling sites on another port
+        or subdomain would otherwise count as the same site."""
+        site = self.headers.get("Sec-Fetch-Site", "")
+        if site and site not in ("same-origin", "none"):
+            return False
+        origin = self.headers.get("Origin")
+        if origin is None:
+            return True
+        try:
+            o = urlsplit(origin.strip())
+            o_host, o_port = (o.hostname or "").rstrip(".").lower(), o.port or default_port(o.scheme)
+        except ValueError:
+            return False
+        if not o_host:
+            return False  # "null": a sandboxed frame or a local file
+        h_host, h_port = split_host(self.headers.get("Host", ""))
+        if o_host == h_host and (h_port is None or h_port == o_port):
+            return True
+        try:
+            p = urlsplit(setting("public_url"))
+            return bool(p.hostname) and o_host == p.hostname.lower() and o_port == (p.port or default_port(p.scheme))
+        except ValueError:
+            return False
+
+    def json_write_ok(self, method, path) -> bool:
+        """A browser can send a plain-text POST to another site without asking first; a JSON one it can't. So a POST
+        that relies on a cookie or on open mode must say it's JSON. Calls with the access token are exempt: no
+        page can add that header without the hub's permission, and scripts often post with curl's default type."""
+        if method != "POST" or self.token_ok() or path == "/api/auth/logout":
+            return True
+        ctype = self.headers.get("Content-Type", "").split(";")[0].strip().lower()
+        return ctype == "application/json"
 
     def session_token(self):
         for part in self.headers.get("Cookie", "").split(";"):
@@ -209,6 +333,10 @@ class Handler(ApiRoutes, BaseHTTPRequestHandler):
     def dispatch(self, method):
         try:
             path = self.route
+            if not self.host_ok():
+                self.close_connection = True
+                return self.send_json({"error": "this hub doesn't answer to that host name; add it to HUB_ALLOWED_HOSTS "
+                                                "or set the hub address in Settings"}, 421)
             if method == "GET" and path in ("/", "/index.html"):
                 return self.send_bytes((WEB_DIR / "index.html").read_bytes().replace(b"{{version}}", WEB_VERSION.encode()),
                                        "text/html; charset=utf-8", extra={"Content-Security-Policy": PAGE_CSP, "X-Frame-Options": "DENY",
@@ -218,21 +346,24 @@ class Handler(ApiRoutes, BaseHTTPRequestHandler):
         except ValueError:
             self.close_connection = True
             return self.send_json({"error": "not found"}, 404)
-        if path == "/healthz":
-            deep = self.query.get("deep") == "1"
-            body, code = health(deep and self.authed())
-            return self.send_json(body, code)
-        self._raw = None
-        public = path in ("/api/auth/status", "/api/auth/setup", "/api/auth/login", "/api/auth/logout")
-        if (not public and not self.authed()) or (public and self.bad_token()):
-            self.close_connection = True  # don't leave an unread body on a keep-alive connection
-            return self.send_json({"error": "unauthorized"}, 401)
         try:
+            if path == "/healthz":
+                deep = self.query.get("deep") == "1"
+                body, code = health(deep and self.authed())
+                return self.send_json(body, code)
+            self._raw = None
+            public = path in ("/api/auth/status", "/api/auth/setup", "/api/auth/login", "/api/auth/logout")
+            if (not public and not self.authed()) or (public and self.bad_token()):
+                self.close_connection = True  # don't leave an unread body on a keep-alive connection
+                return self.send_json({"error": "unauthorized"}, 401)
             if method in ("POST", "PUT", "PATCH", "DELETE"):
-                # Writes from another site's page are refused; tools and scripts don't send this header.
-                if self.headers.get("Sec-Fetch-Site", "") == "cross-site":
+                # Writes from another page are refused, including pages on another port or subdomain of this host.
+                if not self.same_origin():
                     self.close_connection = True
-                    return self.send_json({"error": "cross-site request refused"}, 403)
+                    return self.send_json({"error": "requests from other sites are refused"}, 403)
+                if not self.json_write_ok(method, path):
+                    self.close_connection = True
+                    return self.send_json({"error": "send JSON with Content-Type: application/json"}, 415)
                 self.body()  # always consume the body so keep-alive connections stay in sync
             if public:
                 return self.auth_api(method, path)

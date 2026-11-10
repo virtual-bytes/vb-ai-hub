@@ -6,22 +6,22 @@ from . import db
 from .config import COLUMNS, EDITABLE
 from .util import as_int, now, parse_ts, plain_status, safe_url
 from .db import db_lock, int_setting, setting
-from .redaction import redact
+from .redaction import redact, redact_clip
 from .live import broadcast
 from .records import get_card, index_card, log_event, push_card, top_position
-from .projects import ensure_project, resolve_project
+from .projects import ensure_project, library_key_taken, resolve_project
 from .archive import gc_blobs
 
 
 def upsert(card_id: str, source: str, fields: dict, initial_col: str, event: str = "", detail: str = ""):
     """Create or update a card from an automated source, respecting fields a person has edited.
     fields['project'] is the source's own project name; matching rules decide the effective project."""
+    if "project" in fields:
+        fields["source_project"] = fields.pop("project")
+    clean_fields(fields)  # scrubbing can take a moment on long text, so it happens before the lock
     with db_lock:
         existing = get_card(card_id)
         t = now()
-        if "project" in fields:
-            fields["source_project"] = fields.pop("project")
-        clean_fields(fields)
         if existing is None:
             col = initial_col if initial_col in COLUMNS else "active"
             data = {
@@ -67,13 +67,17 @@ def upsert(card_id: str, source: str, fields: dict, initial_col: str, event: str
     return push_card(card_id)
 
 
+FIELD_LIMITS = {"title": 300, "last_prompt": 400, "summary": 2000, "notes": 20000, "cwd": 1000, "model": 100,
+                "host": 100, "source_project": 300, "session_id": 100}
+
+
 def clean_fields(fields):
-    """Every value from a source is scrubbed and typed before it's stored."""
-    for k in ("title", "last_prompt", "summary", "notes", "cwd", "model", "host", "source_project", "session_id"):
+    """Every value from a source is cut to its size, scrubbed and typed before it's stored."""
+    for k, n in FIELD_LIMITS.items():
         if fields.get(k) is not None:
-            fields[k] = redact(str(fields[k]))
+            fields[k] = redact_clip(fields[k], n)
     if fields.get("url") is not None:
-        fields["url"] = redact(safe_url(fields["url"])) or None
+        fields["url"] = redact_clip(safe_url(fields["url"]), 2000) or None
     if fields.get("status") is not None:
         fields["status"] = plain_status(fields["status"])
     for k in ("created_at", "last_activity"):
@@ -86,19 +90,22 @@ def clean_fields(fields):
 
 
 def patch_card(cid, body):
+    given = {}
+    for k in EDITABLE & body.keys():  # scrubbed before the lock, as in upsert
+        v = body[k]
+        if k in ("title", "notes", "project"):
+            v = redact_clip(v, 20000 if k == "notes" else 300)
+        elif k == "url":
+            v = redact_clip(safe_url(v), 2000)
+        given[k] = v
     with db_lock:
         card = get_card(cid)
         if not card:
             raise LookupError("not found")
         updates, locked = {}, set(card["user_fields"])
-        for k in EDITABLE & body.keys():
-            if k == "column" and body[k] not in COLUMNS:
+        for k, v in given.items():
+            if k == "column" and v not in COLUMNS:
                 continue
-            v = body[k]
-            if k in ("title", "notes", "project"):
-                v = redact(str(v or ""))[:20000 if k == "notes" else 300]
-            elif k == "url":
-                v = redact(safe_url(v))
             updates["col" if k == "column" else k] = v
             if k != "column":
                 locked.add(k)
@@ -137,10 +144,16 @@ def patch_card(cid, body):
 
 
 def delete_card(card_id):
+    """Remove a card and its library for good. Only ever a real card: a project's or task's documents are kept even
+    if a card made by an older version shares their key."""
     with db_lock:
-        shas = [r["sha"] for r in db.conn.execute("SELECT sha FROM attachments WHERE card_id=?", (card_id,))]
-        for t in ("cards WHERE id=?", "events WHERE card_id=?", "attachments WHERE card_id=?", "files_log WHERE card_id=?",
-                  "worklog WHERE card_id=?", "search WHERE card_id=?", "usage WHERE card_id=?", "links WHERE card_id=?"):
+        if not db.conn.execute("SELECT 1 FROM cards WHERE id=?", (card_id,)).fetchone():
+            return
+        shared = library_key_taken(card_id)
+        shas = [] if shared else [r["sha"] for r in db.conn.execute("SELECT sha FROM attachments WHERE card_id=?", (card_id,))]
+        tables = ["cards WHERE id=?", "files_log WHERE card_id=?", "worklog WHERE card_id=?", "usage WHERE card_id=?", "links WHERE card_id=?"]
+        tables += ["search WHERE card_id=? AND kind IN ('card', 'log')"] if shared else ["events WHERE card_id=?", "attachments WHERE card_id=?", "search WHERE card_id=?"]
+        for t in tables:
             db.conn.execute(f"DELETE FROM {t}", (card_id,))
         db.conn.commit()
         gc_blobs(shas)

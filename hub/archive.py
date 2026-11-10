@@ -10,10 +10,10 @@ from . import db
 from .config import BLOB_DIR, FTS_DOC_LIMIT
 from .util import clean_mime, is_text, iso, now, safe_name, safe_url
 from .db import db_lock
-from .redaction import redact, redact_bytes
+from .redaction import redact, redact_bytes, redact_clip
 from .live import broadcast
 from .records import get_card, index_card, log_event, push_card
-from .projects import owner_exists
+from .projects import library_owner, owner_exists
 
 
 def blob_path(sha: str) -> Path:
@@ -43,7 +43,7 @@ def gc_blobs(shas):
 
 def add_attachment(owner, kind, name, path, data: bytes, mime="", replace=False, at=None):
     """Store a file version for a card, task or project. Identical content for the same path is a no-op."""
-    name, path = redact(str(name or "file"))[:300], redact(str(path or name))[:1000]
+    name, path = redact_clip(name or "file", 300), redact_clip(path or name, 1000)
     mime = clean_mime(mime, name)
     data = redact_bytes(data, mime, name)
     sha = put_blob(data)
@@ -67,8 +67,10 @@ def add_attachment(owner, kind, name, path, data: bytes, mime="", replace=False,
                                 (owner, path, name, data.decode("utf-8", "replace")))
         db.conn.commit()
         gc_blobs(old)
+        if not blob_path(sha).exists():  # removed by a clean-up that ran between put_blob and the insert
+            put_blob(data)
     if added:
-        if owner.startswith(("task:", "project:")):
+        if library_owner(owner):
             broadcast("library", {"owner": owner})
         else:
             push_card(owner)
@@ -78,7 +80,7 @@ def add_attachment(owner, kind, name, path, data: bytes, mime="", replace=False,
 def add_files(card_id, items):
     with db_lock:
         for it in items:
-            p, at = redact(str(it.get("path", "")))[:1000], float(it.get("at") or now())
+            p, at = redact_clip(it.get("path", ""), 1000), float(it.get("at") or now())
             if not p:
                 continue
             db.conn.execute(
@@ -92,9 +94,9 @@ def add_files(card_id, items):
 
 def add_worklog(card_id, items):
     latest = None
+    entries = [(redact_clip(str(it.get("text") or "").strip(), 20000), it) for it in items]  # scrubbed before the lock
     with db_lock:
-        for it in items:
-            text = redact((it.get("text") or "").strip())
+        for text, it in entries:
             if not text:
                 continue
             at = float(it.get("at") or now())
@@ -120,7 +122,7 @@ def add_links(card_id, items):
                 "INSERT INTO links(card_id, kind, key, title, url, repo, at) VALUES (?,?,?,?,?,?,?)"
                 " ON CONFLICT(card_id, kind, key) DO UPDATE SET title=COALESCE(NULLIF(excluded.title,''), title),"
                 " url=COALESCE(NULLIF(excluded.url,''), url), repo=COALESCE(NULLIF(excluded.repo,''), repo)",
-                (card_id, it["kind"], str(it["key"])[:200], redact(str(it.get("title") or ""))[:300], redact(safe_url(it.get("url")))[:500],
+                (card_id, it["kind"], str(it["key"])[:200], redact_clip(it.get("title"), 300), redact_clip(safe_url(it.get("url")), 500),
                  str(it.get("repo") or "")[:200], it.get("at") if isinstance(it.get("at"), (int, float)) else None))
         db.conn.commit()
     push_card(card_id)

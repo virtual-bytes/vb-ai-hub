@@ -21,6 +21,7 @@ import subprocess
 import sys
 import socket
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
@@ -53,6 +54,16 @@ def config():
     return url.rstrip("/"), token
 
 
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    """Every call carries the hub token, so a redirect to another address is an error rather than a hand-over."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        raise urllib.error.HTTPError(req.full_url, code, f"the hub redirected to {newurl}; set HUB_URL to that address", headers, fp)
+
+
+OPENER = urllib.request.build_opener(NoRedirect)
+
+
 def request(method, path, body=None, timeout=2.5, ctype="application/json"):
     url, token = config()
     data = body if isinstance(body, bytes) or body is None else json.dumps(body).encode()
@@ -60,7 +71,7 @@ def request(method, path, body=None, timeout=2.5, ctype="application/json"):
     if token:
         headers["Authorization"] = f"Bearer {token}"
     req = urllib.request.Request(url + path, data=data, headers=headers, method=method)
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with OPENER.open(req, timeout=timeout) as r:
         return json.loads(r.read() or b"{}")
 
 

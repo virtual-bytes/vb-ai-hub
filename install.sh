@@ -15,7 +15,8 @@ if [[ -f "$SCRIPT" ]]; then
 else  # piped straight from the hub, so fetch the hook from it, whatever folder this runs in
   HOOK="$HOME/.local/share/vb-ai-hub/hook.py"
   mkdir -p "$(dirname "$HOOK")"
-  curl -fsS -H "Authorization: Bearer ${HUB_TOKEN:-}" -o "$HOOK.new" "$URL/connect/hook.py"
+  # The token reaches curl on its standard input, so other users on this machine never see it in the process list.
+  printf 'header = "Authorization: Bearer %s"\n' "${HUB_TOKEN:-}" | curl -fsS -K - -o "$HOOK.new" "$URL/connect/hook.py"
   if [[ -n "${HUB_HOOK_SHA256:-}" ]]; then  # the Connect tools page puts the expected checksum in the command
     got="$(python3 -c 'import hashlib,sys; print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$HOOK.new")"
     if [[ "$got" != "$HUB_HOOK_SHA256" ]]; then
@@ -27,22 +28,23 @@ else  # piped straight from the hub, so fetch the hook from it, whatever folder 
   mv "$HOOK.new" "$HOOK"
 fi
 mkdir -p ~/.config/vb-ai-hub
-python3 - "$URL" "${HUB_TOKEN:-}" <<'PY'
-import json, sys, pathlib
+HUB_TOKEN="${HUB_TOKEN:-}" python3 - "$URL" <<'PY'
+import json, os, sys, pathlib
 p = pathlib.Path.home() / ".config/vb-ai-hub/config.json"
-p.write_text(json.dumps({"url": sys.argv[1], "token": sys.argv[2]}, indent=2))
+p.touch(mode=0o600)
 p.chmod(0o600)
+p.write_text(json.dumps({"url": sys.argv[1], "token": os.environ["HUB_TOKEN"]}, indent=2))
 PY
 # Merge hooks into ~/.claude/settings.json (backs up the original and replaces earlier entries).
 python3 - "$HOOK" <<'PY'
-import json, shutil, sys, pathlib, time
+import json, shlex, shutil, sys, pathlib, time
 hook = sys.argv[1]
 p = pathlib.Path.home() / ".claude/settings.json"
 p.parent.mkdir(parents=True, exist_ok=True)
 s = json.loads(p.read_text()) if p.exists() else {}
 if p.exists():
     shutil.copy(p, p.with_name(f"settings.json.bak-{int(time.time())}"))
-cmd = f"python3 {json.dumps(hook)}"
+cmd = f"python3 {shlex.quote(hook)}"  # the command runs in a shell, so the path is quoted for one
 hooks = s.setdefault("hooks", {})
 for event in ("SessionStart", "UserPromptSubmit", "Stop", "SessionEnd"):
     groups = hooks.setdefault(event, [])

@@ -87,7 +87,8 @@ $("#bookmarklet").href = `javascript:(()=>{const t=document.title.replace(/ [-\\
 const hubUrl = location.origin;
 $("#mcpCmd").textContent = `claude mcp add --transport http --scope user vb-ai-hub ${hubUrl}/mcp --header "Authorization: Bearer $HUB_TOKEN"`;
 function showHookCmd(sum) {
-  $("#hookCmd").textContent = `curl -fsS -H "Authorization: Bearer $HUB_TOKEN" ${hubUrl}/connect/install.sh | HUB_URL=${hubUrl} HUB_TOKEN=$HUB_TOKEN${sum ? " HUB_HOOK_SHA256=" + sum : ""} bash`;
+  // printf is built into the shell, so the token reaches curl without ever being one of its arguments.
+  $("#hookCmd").textContent = `printf 'header = "Authorization: Bearer %s"\\n' "$HUB_TOKEN" | curl -fsS -K - ${hubUrl}/connect/install.sh | HUB_URL=${hubUrl} HUB_TOKEN=$HUB_TOKEN${sum ? " HUB_HOOK_SHA256=" + sum : ""} bash`;
 }
 async function loadHookSum() { try { showHookCmd((await api("/connect/sums"))["hook.py"]); } catch {} }
 showHookCmd("");
@@ -95,7 +96,7 @@ $("#plainHttp").hidden = location.protocol === "https:" || ["localhost", "127.0.
 $("#cursorCfg").textContent = JSON.stringify({ mcpServers: { "vb-ai-hub": { url: `${hubUrl}/mcp`, headers: { Authorization: "Bearer ${env:HUB_TOKEN}" } } } }, null, 2);
 $("#codexCfg").textContent = `[mcp_servers.vb-ai-hub]\nurl = "${hubUrl}/mcp"\nbearer_token_env_var = "HUB_TOKEN"`;
 $("#mcpUrl").textContent = `${hubUrl}/mcp`;
-$("#ingestCmd").textContent = `curl -X POST ${hubUrl}/api/ingest -H "Authorization: Bearer $HUB_TOKEN" -d '{"source":"chatgpt","id":"chat-1","title":"My chat","worklog":"What was done"}'`;
+$("#ingestCmd").textContent = `curl -X POST ${hubUrl}/api/ingest -H "Authorization: Bearer $HUB_TOKEN" -H "Content-Type: application/json" -d '{"source":"chatgpt","id":"chat-1","title":"My chat","worklog":"What was done"}'`;
 $$("[data-copy]").forEach(b => b.onclick = () => copyText($("#" + b.dataset.copy).textContent));
 $$("[data-tool]").forEach(b => b.onclick = () => {
   $$("[data-tool]").forEach(x => x.setAttribute("aria-pressed", x === b));
