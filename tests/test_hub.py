@@ -296,6 +296,46 @@ class Page(Hub):
                 self.assertEqual(len(groups), 1)
                 self.assertIn(str(hook), groups[0]["hooks"][0]["command"])
 
+    def test_cursor_machine_connects_with_one_command(self):
+        self.assertEqual(self.call("GET", "/connect/install-cursor.sh", token=None, raw=True)[0], 401)
+        with tempfile.TemporaryDirectory() as home:
+            script = self.ok("GET", "/connect/install-cursor.sh", raw=True)
+            env = {**os.environ, "HOME": home, "HUB_URL": self.base + "/", "HUB_TOKEN": TOKEN}
+            (Path(home) / "cursor.py").write_text("# a different file that happens to be in this folder")
+            run = subprocess.run(["bash", "-s", "--", "--no-backfill"], input=script, capture_output=True, env=env, cwd=home)
+            self.assertEqual(run.returncode, 0, run.stderr.decode())
+            config = json.loads((Path(home) / ".config/vb-ai-hub/config.json").read_text())
+            self.assertEqual(config, {"url": self.base, "token": TOKEN})
+            cursor = Path(home) / ".local/share/vb-ai-hub/cursor.py"
+            self.assertEqual(cursor.read_bytes(), (ROOT / "cursor.py").read_bytes())
+            for _ in range(2):  # running it again replaces the entries rather than doubling them
+                subprocess.run(["bash", "-s", "--", "--no-backfill"], input=script, capture_output=True, env=env, cwd=home, check=True)
+            hooks = json.loads((Path(home) / ".cursor/hooks.json").read_text())["hooks"]
+            self.assertEqual(set(hooks), {"sessionStart", "beforeSubmitPrompt", "stop", "sessionEnd"})
+            for entries in hooks.values():
+                self.assertEqual(len(entries), 1)
+                self.assertIn(str(cursor), entries[0]["command"])
+
+    def test_cursor_installer_checks_checksum(self):
+        sums = self.ok("GET", "/connect/sums")
+        self.assertEqual(sums["cursor.py"], hashlib.sha256((ROOT / "cursor.py").read_bytes()).hexdigest())
+        script = self.ok("GET", "/connect/install-cursor.sh", raw=True)
+        with tempfile.TemporaryDirectory() as home:
+            env = {**os.environ, "HOME": home, "HUB_URL": self.base, "HUB_TOKEN": TOKEN, "HUB_CURSOR_SHA256": "0" * 64}
+            run = subprocess.run(["bash", "-s", "--", "--no-backfill"], input=script, capture_output=True, env=env, cwd=home)
+            self.assertNotEqual(run.returncode, 0)
+            self.assertIn(b"doesn't match", run.stderr)
+            self.assertFalse((Path(home) / ".cursor/hooks.json").exists())
+            self.assertFalse((Path(home) / ".local/share/vb-ai-hub/cursor.py").exists())
+            env["HUB_CURSOR_SHA256"] = sums["cursor.py"]
+            run = subprocess.run(["bash", "-s", "--", "--no-backfill"], input=script, capture_output=True, env=env, cwd=home)
+            self.assertEqual(run.returncode, 0, run.stderr.decode())
+
+    def test_cursor_pane_offers_tracking_command(self):
+        page = self.ok("GET", "/", raw=True).decode()
+        self.assertIn('id="cursorInstallCmd"', page)
+        self.assertNotIn("Cursor sessions don't appear on the board yet.", page)
+
     @unittest.skipUnless(shutil.which("node"), "needs node")
     def test_scripts_only_call_functions_that_exist(self):
         js = "\n".join(f.read_text() for f in (ROOT / "web" / "js").glob("*.js"))
@@ -911,6 +951,19 @@ class Sources(Hub):
             card = self.ok("POST", "/api/ingest", {"source": source, "id": "run-1", "title": "t", "worklog": "did it"})
             self.assertEqual((card["id"], card["source"]), (f"{source}:run-1", source))
 
+    def test_ingest_carries_rich_session_fields(self):
+        self.ok("POST", "/api/ingest", {"source": "codex", "id": "rich-1", "title": "Rich", "host": "box", "session_id": "s-rich",
+                                        "cwd": "/work/rich", "msg_count": "7", "created_at": "2026-10-01T00:00:00Z"})
+        card = self.ok("GET", f"/api/cards/{self.q('codex:rich-1')}")
+        self.assertEqual((card["host"], card["session_id"], card["cwd"], card["msg_count"]), ("box", "s-rich", "/work/rich", 7))
+        self.assertIsInstance(card["created_at"], float)
+
+    def test_ingest_records_daily_usage(self):
+        before = self.stats()["today"]["output"]
+        self.ok("POST", "/api/ingest", {"source": "codex", "id": "usage-1", "title": "U",
+                                        "usage": {"m": {"output": 5}}, "days": {TODAY: {"m": {"output": 5}}}})
+        self.assertEqual(self.stats()["today"]["output"] - before, 5)
+
     def test_the_page_knows_every_named_source(self):
         js = (ROOT / "web" / "js" / "core.js").read_text() + (ROOT / "web" / "js" / "board.js").read_text()
         extra = re.search(r"EXTRA_SOURCES = \[(.*?)\]", js).group(1)
@@ -957,6 +1010,32 @@ class Sessions(Hub):
         self.hook("edit", cwd="/tmp/a", project="alpha", title="Auto title")
         self.ok("PATCH", f"/api/cards/{self.q('code:edit')}", {"title": "My title"})
         self.assertEqual(self.hook("edit", "Stop", title="Auto again")["title"], "My title")
+
+
+class Cursor(Hub):
+    def cursor(self, event, sid, **kw):
+        return self.ok("POST", "/api/cursor", {"hook_event_name": event, "session_id": sid, **kw})
+
+    def test_lifecycle_moves_columns(self):
+        c = self.cursor("SessionStart", "cur", cwd="/tmp/c", project="c", title="Cur")
+        self.assertEqual((c["id"], c["source"], c["column"], c["status"]), ("cursor:cur", "cursor", "active", "running"))
+        c = self.cursor("Stop", "cur")
+        self.assertEqual((c["column"], c["status"]), ("needs_me", "waiting"))
+        c = self.cursor("UserPromptSubmit", "cur", prompt="more")
+        self.assertEqual((c["column"], c["status"]), ("active", "running"))
+
+    def test_requires_session_id(self):
+        self.assertEqual(self.call("POST", "/api/cursor", {"hook_event_name": "Stop"})[0], 400)
+
+    def test_reconcile_removes_only_this_host(self):
+        for sid, host in (("cur-keep", "ch1"), ("cur-gone", "ch1"), ("cur-other", "ch2")):
+            self.cursor("SessionStart", sid, host=host, title=sid)
+        out = self.ok("POST", "/api/reconcile/cursor", {"host": "ch1", "sessions": ["cur-keep"], "cleanup_days": 30})
+        self.assertEqual(out["removed"], 1)
+        ids = [c["id"] for c in self.ok("GET", "/api/cards")["cards"]]
+        self.assertIn("cursor:cur-keep", ids)
+        self.assertIn("cursor:cur-other", ids)
+        self.assertNotIn("cursor:cur-gone", ids)
 
 
 class Projects(Hub):
@@ -1298,6 +1377,37 @@ class HookParsing(unittest.TestCase):
             self.assertEqual(self.h.subagent_usage(str(Path(d, "s1.jsonl")), offsets)[0], {})
 
 
+class CursorParsing(unittest.TestCase):
+    """Cursor's stdin payloads, without a server."""
+
+    @classmethod
+    def setUpClass(cls):
+        import importlib.util
+        spec = importlib.util.spec_from_file_location("cursor_hook", ROOT / "cursor.py")
+        cls.c = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(cls.c)
+
+    def test_normalize_maps_cursor_payloads(self):
+        ev = self.c.normalize({"hook_event_name": "sessionStart", "session_id": "s-1", "workspace_roots": ["/tmp/proj"],
+                               "title": "Fix the parser", "model_id": "claude-x",
+                               "usage": {"input_tokens": 3, "output_tokens": 4}})
+        self.assertEqual((ev["hook_event_name"], ev["session_id"], ev["cwd"], ev["title"], ev["model"], ev["host"]),
+                         ("SessionStart", "s-1", "/tmp/proj", "Fix the parser", "claude-x", socket.gethostname()))
+        self.assertEqual(ev["usage"]["claude-x"], {"input": 3, "output": 4})
+
+    def test_normalize_reads_prompts_and_lifecycle_names(self):
+        ev = self.c.normalize({"hook_event_name": "beforeSubmitPrompt", "conversation_id": "conv-1", "prompt": "Add a test"})
+        self.assertEqual((ev["hook_event_name"], ev["session_id"], ev["prompt"]), ("UserPromptSubmit", "conv-1", "Add a test"))
+        self.assertEqual(self.c.normalize({"hook_event_name": "stop", "conversation_id": "conv-1"})["hook_event_name"], "Stop")
+        end = self.c.normalize({"hook_event_name": "sessionEnd", "session_id": "conv-1", "reason": "completed"})
+        self.assertEqual((end["hook_event_name"], end["reason"]), ("SessionEnd", "completed"))
+
+    def test_unknown_fields_are_ignored(self):
+        ev = self.c.normalize({"hook_event_name": "somethingNew", "session_id": "x", "surprise": {"a": 1}, "usage": "not a dict"})
+        self.assertEqual((ev["hook_event_name"], ev["session_id"]), ("somethingNew", "x"))
+        self.assertNotIn("usage", ev)
+
+
 class Security(AccountHelpers, Hub):
     """One or more tests per finding in the November 2026 security review."""
 
@@ -1388,6 +1498,8 @@ class Security(AccountHelpers, Hub):
             ("POST", "/api/rules", {"project_id": p1["id"], "field": "title", "pattern": "x"}),
             ("POST", "/api/usage/local", {"rows": []}),
             ("POST", "/api/events", {"hook_event_name": "Stop", "session_id": "m"}),
+            ("POST", "/api/cursor", {"hook_event_name": "Stop", "session_id": "m"}),
+            ("POST", "/api/reconcile/cursor", {"host": "h", "sessions": ["a"]}),
             ("POST", "/api/tools/file-chat", {"chat_id": "a", "project": "p"}),
         ]
         for method, path, body in refused:

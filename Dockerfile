@@ -1,6 +1,6 @@
 FROM python:3.13-alpine
 WORKDIR /app
-COPY server.py hook.py install.sh ./
+COPY server.py hook.py install.sh cursor.py install-cursor.sh ./
 COPY hub ./hub
 COPY web ./web
 RUN apk add --no-cache tzdata && adduser -D -u 10001 hub && mkdir /data /backup && chown hub /data /backup

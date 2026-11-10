@@ -177,10 +177,12 @@
   <div class="cmd"><code id="mcpCmd"></code><button class="btn small" type="button" data-copy="mcpCmd">Copy</button></div>
 </div>
 <div class="tool-pane" data-tool-body="cursor" hidden>
+  <h3>Track this machine's sessions</h3>
+  <p>Run this on each machine that uses Cursor. It adds the hooks that send sessions to the hub. First run <code>read -rs HUB_TOKEN &amp;&amp; export HUB_TOKEN</code> and paste your access token, so it stays out of your shell history. The command checks the hook it downloads against a checksum.</p>
+  <div class="cmd"><code id="cursorInstallCmd"></code><button class="btn small" type="button" data-copy="cursorInstallCmd">Copy</button></div>
   <h3>Let Cursor use the library</h3>
   <p>Add this to <code>~/.cursor/mcp.json</code>, and set <code>HUB_TOKEN</code> to your access token in Cursor's environment.</p>
   <div class="cmd block"><code id="cursorCfg"></code><button class="btn small" type="button" data-copy="cursorCfg">Copy</button></div>
-  <p>Cursor sessions don't appear on the board yet.</p>
 </div>
 <div class="tool-pane" data-tool-body="codex" hidden>
   <h3>Let Codex use the library</h3>

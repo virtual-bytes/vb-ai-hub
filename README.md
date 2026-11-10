@@ -55,7 +55,8 @@ Data lives in the `vb-ai-hub-data` volume: `hub.db` plus `blobs/`. Transcripts c
 ### Connect your tools
 
 - **Claude Code:** Settings → Connect tools shows two commands to copy. One tracks that machine's sessions, and the other lets Claude use the library through MCP.
-- **Cursor and Codex:** the same page shows the MCP setup, so they can use the library. Their sessions don't appear on the board yet.
+- **Cursor:** the same page shows a command that tracks this machine's sessions on the board, plus the MCP setup so Cursor can use the library.
+- **Codex:** the same page shows the MCP setup, so it can use the library. Its sessions don't appear on the board yet.
 - **GPT and Grok:** use them through Open WebUI and their chats sync like any other. A chatgpt.com or grok.com link added to the board gets its own tab, but the conversation itself isn't captured.
 - **Open WebUI:** add your address and API key under Settings → Connections. The hub then syncs your chats and can write handoffs and answers with your models.
 - **LiteLLM:** add your gateway under Settings → Connections to count the work done by your own hardware.
@@ -212,6 +213,7 @@ docker compose start
 | Source | How | What gets archived |
 |---|---|---|
 | Claude Code (CLI and desktop) | Hooks run `hook.py` on SessionStart, UserPromptSubmit, Stop, and SessionEnd. Archiving runs in a detached background process, so sessions never wait. | Docs the session wrote or edited (`.md`, `.txt`, `.rst`, `.adoc`), wherever they are on the machine, not only inside the working folder, handoff docs in the working folder that the session names and that changed while it ran, every file path written or edited, Claude's final reply each turn, and the compressed transcript (re-sent after 1 MB of growth or 20 minutes, and always on SessionEnd). |
+| Cursor | Hooks run `cursor.py` on sessionStart, beforeSubmitPrompt, stop, and sessionEnd. | The live session card and its prompts. Cursor has no documented local transcript folder, so nothing else is archived. |
 | Open WebUI | The server polls the API with the key set in **Settings**. Folders become projects. | Each assistant reply goes to the work log, and the full chat JSON is stored as the transcript. |
 | claude.ai | **Import** your data export (`conversations.json`, `projects.json`), the bookmarklet, or **Add card**. claude.ai has no listing API. | Full conversation, project knowledge files, and project instructions. |
 | Anything else | `POST /api/ingest` and `PUT …/attachments` (below). | Whatever you send. |
@@ -287,7 +289,7 @@ Set a monthly budget or daily limit to get a meter on the Usage page. The hub wa
 
 ## Use the library from your tools (MCP)
 
-The hub is an MCP server at `/mcp`, so Claude Code can use the library from inside a session. Settings → Connect tools has this command with your address filled in, plus the setup for Cursor and Codex:
+The hub is an MCP server at `/mcp`, so Claude Code can use the library from inside a session. Settings → Connect tools has this command with your address filled in, plus Cursor's session-tracking command and the setup for Cursor and Codex:
 
 ```bash
 claude mcp add --transport http --scope user vb-ai-hub https://your-hub/mcp --header "Authorization: Bearer $HUB_TOKEN"
@@ -321,7 +323,8 @@ No tool deletes anything. Library text comes from past sessions, so the server t
 | `hub/mcp.py` | The MCP server |
 | `hub/routes.py`, `web.py` | The JSON API; the HTTP handler, authentication and dispatch |
 | `web/` | The page, styles and scripts |
-| `hook.py` | The Claude Code hook that runs on each workstation |
+| `hook.py`, `install.sh` | The Claude Code hook that runs on each workstation, and its installer |
+| `cursor.py`, `install-cursor.sh` | The Cursor hook that runs on each workstation, and its installer |
 
 Modules import only from the ones above them. Scripts in `web/js/` are classic scripts that share globals, loaded in the order listed in `web/index.html`; `boot.js` is last and starts the app, so top-level code in other files should only define things and bind handlers. `web/` is served before sign-in, so keep anything private out of it.
 

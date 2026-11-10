@@ -221,9 +221,9 @@ def prune_projects():
     return len(rows)
 
 
-def reconcile_code(body):
-    """A workstation reports the Claude Code sessions it still has; cards for sessions it deleted go to the trash.
-    Sessions older than Claude Code's own cleanup window are kept: their transcripts expire, the library should not."""
+def reconcile_source(body, source="code"):
+    """A workstation reports the sessions it still has for this source; cards for sessions it deleted go to the trash.
+    Sessions older than the tool's own cleanup window are kept: their transcripts expire, the library should not."""
     host = str(body.get("host") or "")[:100]
     sessions = set(body.get("sessions") or [])
     if not host or len(sessions) < 1:
@@ -232,12 +232,12 @@ def reconcile_code(body):
     # Sessions recorded before hosts were tracked belong to whichever machine still has them. A machine only
     # ever removes what it owns, so a second workstation can't trash another's sessions.
     with db_lock:
-        for r in db.conn.execute("SELECT id, session_id FROM cards WHERE source='code' AND host=''").fetchall():
+        for r in db.conn.execute("SELECT id, session_id FROM cards WHERE source=? AND host=''", (source,)).fetchall():
             if r["session_id"] in sessions:
                 db.conn.execute("UPDATE cards SET host=? WHERE id=?", (host, r["id"]))
         db.conn.commit()
-    rows = db.conn.execute("SELECT id, session_id, last_activity FROM cards WHERE source='code' AND deleted_at IS NULL"
-                           " AND host=?", (host,)).fetchall()
+    rows = db.conn.execute("SELECT id, session_id, last_activity FROM cards WHERE source=? AND deleted_at IS NULL"
+                           " AND host=?", (source, host)).fetchall()
     gone = [r for r in rows if r["session_id"] not in sessions and r["last_activity"] >= keep_after]
     if len(gone) > max(5, len(rows) // 2):
         raise ValueError(f"refusing to remove {len(gone)} of {len(rows)} sessions at once")
