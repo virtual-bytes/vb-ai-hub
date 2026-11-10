@@ -1,7 +1,7 @@
 """
 title: VB AI Hub
 author: Virtual Bytes
-version: 1.0.0
+version: 1.0.2
 description: Search and ask the VB AI Hub project library, get a project brief (latest handoff, open tasks), and file the current chat under a project and task.
 """
 

@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## 1.0.2
 
-More security fixes. After 1.0.1 I had the fixed code reviewed a second time, and this fixes what that review found.
+More security fixes. After 1.0.1 I had the fixed code reviewed a second time, and this release fixes what that review found. If you run 1.0.1, please update. If you run the hub with no token and no accounts and reach it by a name other than localhost or an IP address, add that name to `HUB_ALLOWED_HOSTS`.
 
 ### Fixed
 
